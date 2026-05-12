@@ -1,0 +1,30 @@
+{
+  "name": "tick-store",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend API for TICK. watch storefront (tick-website-v26)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "stage1": "node scripts/stage1-test.js",
+    "stage2": "node scripts/stage2-test.js",
+    "stage3": "node scripts/stage3-test.js",
+    "stage4": "node scripts/stage4-test.js",
+    "stage5": "node scripts/stage5-test.js",
+    "stage6": "node scripts/stage6-test.js",
+    "stage7": "node scripts/stage7-twilio-normalize.js",
+    "test:all": "npm run stage1 && npm run stage2 && npm run stage3 && npm run stage4 && npm run stage5 && npm run stage6 && npm run stage7",
+    "seed:extract": "node scripts/extract-seed-from-html.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "twilio": "^5.4.5"
+  }
+}
