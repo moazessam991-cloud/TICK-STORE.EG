@@ -2,8 +2,8 @@
    SUPABASE INTEGRATION
 ═══════════════════════════════════════════════════ */
 const SUPABASE_CONFIG = {
-  url: 'YOUR_SUPABASE_URL',
-  anonKey: 'YOUR_SUPABASE_ANON_KEY'
+  url: 'https://baojwaqmriuxcnztixmr.supabase.co',
+  anonKey: 'sb_publishable_mNK6WYCml8BeBiO5GcKtmw_jNgklhdi'
 };
 
 let supabase = null;
