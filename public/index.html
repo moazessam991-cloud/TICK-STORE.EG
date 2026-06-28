@@ -1694,7 +1694,7 @@ async function sha256(msg){
   const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(msg));
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
-async function initHash(){SEC.HASH=await sha256(SEC.SALT+'tick.2026')}
+async function initHash(){/*SEC.HASH=await sha256(SEC.SALT+'tick.2026')*/}
 function genToken(){
   const arr=new Uint8Array(32);
   crypto.getRandomValues(arr);
@@ -2097,7 +2097,12 @@ function autoExportMarketing(){
 // Detect srcdoc/iframe context where pushState is forbidden
 const IS_SRCDOC = (()=>{try{return location.href==='about:srcdoc'||!location.hostname}catch(e){return true}})();
 const IS_FILE = true; // Always use hash routing — works in file://, iframe, and hosted environments
-function getPath(){return location.hash.replace(/^#/,'')||'/'}
+function getPath(){
+  if(IS_SRCDOC) return location.hash.replace(/^#/,'')||'/';
+  const h=location.hash.replace(/^#/,'');
+  if(h) return h;
+  return location.pathname || '/';
+}
 function go(path,rep){
   S.path=path;
   try{
@@ -2105,7 +2110,7 @@ function go(path,rep){
       // In srcdoc iframe: only update hash, never call pushState
       location.hash=path;
     } else {
-      rep?history.replaceState(null,'','#'+path):history.pushState(null,'','#'+path);
+      rep?history.replaceState(null,'',path):history.pushState(null,'',path);
     }
   }catch(e){
     // Fallback: direct hash assignment never throws
@@ -4149,11 +4154,13 @@ async function doLogin(){
   const passEl=document.getElementById('ladm-p');if(!passEl||!passEl.value)return;
   const btn=document.getElementById('login-btn');if(btn){btn.disabled=true;btn.textContent='Verifying...'}
   try{
-    const entered=await sha256(SEC.SALT+passEl.value);
-    if(entered===SEC.HASH){
+    const ar=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:passEl.value})});
+    if(ar.ok){
+      const aj=await ar.json();
       localStorage.removeItem(K.lockout);ls_set('tick_login_attempts',0);
-      setSession();S.admin.sec='overview';
-      try{const ar=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:passEl.value})});if(ar.ok){const aj=await ar.json();if(aj&&aj.token)sessionStorage.setItem('tick_api_token',aj.token);}}catch(_e){}
+      setSession();
+      if(aj&&aj.token)sessionStorage.setItem('tick_api_token',aj.token);
+      S.admin.sec='overview';
       try{await __tickAdminBootstrapFromApi();}catch(_e){}
       logAudit('Admin login','Successful');rAdm();
     } else {
