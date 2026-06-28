@@ -5,7 +5,7 @@
   "description": "Backend API for TICK. watch storefront (tick-website-v26)",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node --env-file=.env server/index.js",
     "stage1": "node scripts/stage1-test.js",
     "stage2": "node scripts/stage2-test.js",
     "stage3": "node scripts/stage3-test.js",
@@ -24,6 +24,8 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
     "twilio": "^5.4.5"
   }

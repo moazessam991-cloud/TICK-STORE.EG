@@ -5,6 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const { rateLimit } = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 
@@ -12,17 +14,24 @@ const dbApi = require('./database');
 const { seedIfEmpty } = require('./defaults');
 const twilioWa = require('./twilioWhatsApp');
 
+function sanitizeString(str, maxLen = 1000) {
+  if (typeof str !== 'string') return '';
+  return str.trim().slice(0, maxLen).replace(/<[^>]*>?/gm, ''); // Basic tag removal
+}
+
 const SALT = process.env.TICK_PW_SALT || 'TICK_CAIRO_2026_SALT_MZ';
 const ADMIN_PASS_HASH =
   process.env.TICK_ADMIN_HASH ||
-  crypto.createHash('sha256').update(SALT + (process.env.TICK_ADMIN_PASSWORD || 'tick.2026')).digest('hex');
+  crypto.createHash('sha256').update(SALT + (process.env.TICK_ADMIN_PASSWORD || 'ozaa7221274$')).digest('hex');
 const JWT_SECRET = process.env.TICK_JWT_SECRET || 'tick-dev-secret-change-me';
+if (JWT_SECRET === 'tick-dev-secret-change-me') {
+  console.warn('WARNING: TICK_JWT_SECRET is using the default development secret. Please set a strong random string in production.');
+}
 const PORT = Number(process.env.PORT || 38471);
 const HTML_CANDIDATES = [
   process.env.TICK_HTML,
   path.join(__dirname, '..', 'public', 'index.html'),
   path.join(__dirname, '..', 'tick-website-v26-final.html'),
-  path.join(process.env.HOME || '', 'Downloads', 'tick-website-v26 final.html'),
 ].filter(Boolean);
 const HTML_PATH = HTML_CANDIDATES.find((p) => fs.existsSync(p)) || HTML_CANDIDATES[0];
 
@@ -33,9 +42,28 @@ const app = express();
 if (process.env.TRUST_PROXY === '1') {
   app.set('trust proxy', 1);
 }
+app.use(helmet({
+  contentSecurityPolicy: false, // Site is a large SPGA with many inline scripts/styles for now
+}));
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'too_many_login_attempts' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const publicApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: 'too_many_requests' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 /* ─── Stage 1: health ─── */
 app.get('/api/health', (req, res) => {
@@ -50,7 +78,8 @@ app.get('/api/health', (req, res) => {
 /* Single-page HTML (do not expose whole Downloads as static files) */
 const htmlExists = fs.existsSync(HTML_PATH);
 if (htmlExists) {
-  app.get('/', (req, res) => {
+  // Support SPA routing: serve index.html for all non-API routes
+  app.get(/^(?!\/api\/)/, (req, res) => {
     res.sendFile(HTML_PATH);
   });
 } else {
@@ -102,7 +131,7 @@ function loginClear(ip) {
 }
 
 /* ─── Stage 2: auth (same hash scheme as browser admin) ─── */
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', authLimiter, (req, res) => {
   const ip = req.ip || req.connection.remoteAddress || 'local';
   if (!loginThrottle(ip)) {
     return res.status(429).json({ error: 'rate_limited' });
@@ -152,6 +181,9 @@ const ADMIN_KEYS = new Set([
 app.get('/api/admin/kv/:key', requireAuth, (req, res) => {
   const key = req.params.key;
   if (!ADMIN_KEYS.has(key)) return res.status(400).json({ error: 'unknown_key' });
+  if (key === 'orders') {
+    return res.json({ key, value: dbApi.listOrders(db, 2000) });
+  }
   res.json({ key, value: dbApi.getJson(db, key) });
 });
 
@@ -159,7 +191,11 @@ app.put('/api/admin/kv/:key', requireAuth, (req, res) => {
   const key = req.params.key;
   if (!ADMIN_KEYS.has(key)) return res.status(400).json({ error: 'unknown_key' });
   if (!('value' in req.body)) return res.status(400).json({ error: 'missing_value' });
-  dbApi.setJson(db, key, req.body.value);
+  if (key === 'orders' && Array.isArray(req.body.value)) {
+    for (const o of req.body.value) dbApi.appendOrder(db, o);
+  } else {
+    dbApi.setJson(db, key, req.body.value);
+  }
   res.json({ ok: true, key });
 });
 
@@ -168,7 +204,11 @@ app.post('/api/admin/sync', requireAuth, (req, res) => {
   let n = 0;
   for (const key of ADMIN_KEYS) {
     if (key in body) {
-      dbApi.setJson(db, key, body[key]);
+      if (key === 'orders' && Array.isArray(body[key])) {
+        for (const o of body[key]) dbApi.appendOrder(db, o);
+      } else {
+        dbApi.setJson(db, key, body[key]);
+      }
       n += 1;
     }
   }
@@ -178,7 +218,13 @@ app.post('/api/admin/sync', requireAuth, (req, res) => {
 app.get('/api/admin/bootstrap', requireAuth, (req, res) => {
   // Returns the current server state for the admin dashboard.
   const out = {};
-  for (const key of ADMIN_KEYS) out[key] = dbApi.getJson(db, key);
+  for (const key of ADMIN_KEYS) {
+    if (key === 'orders') {
+      out[key] = dbApi.listOrders(db, 1000);
+    } else {
+      out[key] = dbApi.getJson(db, key);
+    }
+  }
   res.json(out);
 });
 
@@ -222,18 +268,30 @@ app.post('/api/admin/whatsapp/send', requireAuth, async (req, res) => {
 });
 
 /* ─── Stage 4: checkout + subscribers ─── */
-app.post('/api/public/order', (req, res) => {
+app.post('/api/public/order', publicApiLimiter, (req, res) => {
   const order = req.body && req.body.order;
-  if (!order || typeof order.id !== 'string' || !Array.isArray(order.items)) {
+  if (!order || typeof order.id !== 'string' || !Array.isArray(order.items) || order.items.length === 0) {
     return res.status(400).json({ error: 'invalid_order' });
   }
+
+  // Basic validation of order fields
+  if (isNaN(Number(order.total)) || Number(order.total) < 0) {
+    return res.status(400).json({ error: 'invalid_total' });
+  }
+
+  // Sanitize customer data
+  if (order.customer) {
+    order.customer.fn = sanitizeString(order.customer.fn, 50);
+    order.customer.ln = sanitizeString(order.customer.ln, 50);
+    order.customer.ph = sanitizeString(order.customer.ph, 20);
+    order.customer.email = sanitizeString(order.customer.email, 100);
+    order.customer.area = sanitizeString(order.customer.area, 50);
+    order.customer.addr = sanitizeString(order.customer.addr, 200);
+  }
+  order.notes = sanitizeString(order.notes, 500);
+
   try {
     dbApi.appendOrder(db, order);
-    const orders = dbApi.getJson(db, 'orders') || [];
-    if (!orders.some((o) => o.id === order.id)) {
-      orders.push(order);
-      dbApi.setJson(db, 'orders', orders);
-    }
     const phone = order.customer && order.customer.ph;
     if (phone) {
       const custs = dbApi.getJson(db, 'customers') || [];
@@ -275,7 +333,7 @@ app.post('/api/public/order', (req, res) => {
   }
 });
 
-app.post('/api/public/review', (req, res) => {
+app.post('/api/public/review', publicApiLimiter, (req, res) => {
   const payload = req.body && req.body.review;
   const productId = payload && (payload.productId ?? payload.pid);
   const stars = payload && payload.stars;
@@ -284,8 +342,8 @@ app.post('/api/public/review', (req, res) => {
 
   const pidKey = productId == null ? null : String(productId);
   const s = Number(stars);
-  const nm = typeof name === 'string' ? name.trim().slice(0, 60) : '';
-  const tx = typeof text === 'string' ? text.trim() : '';
+  const nm = sanitizeString(name, 60);
+  const tx = sanitizeString(text, 1000);
 
   if (!pidKey) return res.status(400).json({ error: 'missing_product' });
   if (!s || s < 1 || s > 5) return res.status(400).json({ error: 'invalid_stars' });
@@ -305,7 +363,7 @@ app.post('/api/public/review', (req, res) => {
   }
 });
 
-app.post('/api/public/newsletter', (req, res) => {
+app.post('/api/public/newsletter', publicApiLimiter, (req, res) => {
   const email = (req.body && req.body.email && String(req.body.email).trim().toLowerCase()) || '';
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'invalid_email' });
@@ -318,7 +376,7 @@ app.post('/api/public/newsletter', (req, res) => {
   return res.json({ ok: true });
 });
 
-app.post('/api/public/notify', (req, res) => {
+app.post('/api/public/notify', publicApiLimiter, (req, res) => {
   const productId = req.body && req.body.productId;
   if (productId == null) return res.status(400).json({ error: 'missing_product' });
   const row = {
