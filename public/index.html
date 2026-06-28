@@ -1677,6 +1677,8 @@ footer{background:linear-gradient(180deg,#0F0F0D,var(--ink))}
 <div id="adm-mob-nav"><div class="amn-inner" id="amn-inner"></div></div>
 <div id="mbg" onclick="handleMBG(event)"><div id="mbox" onclick="event.stopPropagation()"></div></div>
 <div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/supabase-client.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════
    SECURITY LAYER
@@ -1795,23 +1797,29 @@ function __tickScheduleAdminSync(){
   };
 })();
 async function __tickBootstrapFromApi(){
-  if(location.protocol==='file:')return;
   try{
-    const r=await fetch('/api/public/bootstrap');
-    if(!r.ok)return;
-    const d=await r.json();
+    const [p, arch, st, ep, sett] = await Promise.all([
+      sbGetProducts(),
+      sbGetArchive(),
+      sbGetStraps(),
+      sbGetEpisodes(),
+      supabase.from('settings').select('*')
+    ]);
+
     let changed=false;
     __tickHydrating=true;
     try{
-      if(Array.isArray(d.products)&&d.products.length){S.prods=d.products;ls_set(K.prods,S.prods);changed=true;}
-      if(Array.isArray(d.archive)&&d.archive.length){S.archive=d.archive;ls_set(K.archive,S.archive);changed=true;}
-      if(Array.isArray(d.straps)&&d.straps.length){S.straps=d.straps;ls_set(K.straps,S.straps);changed=true;}
-      if(Array.isArray(d.episodes)&&d.episodes.length){S.episodes=d.episodes;ls_set(K.episodes,S.episodes);changed=true;}
-      if(d.settings&&typeof d.settings==='object'&&Object.keys(d.settings).length){S.settings=d.settings;ls_set(K.settings,S.settings);changed=true;}
-      if(d.reviews&&typeof d.reviews==='object'){S.reviews=d.reviews;ls_set(K.reviews,S.reviews);changed=true;}
+      if(p.data && p.data.length){ S.prods=p.data; ls_set(K.prods, S.prods); changed=true; }
+      if(arch.data && arch.data.length){ S.archive=arch.data; ls_set(K.archive, S.archive); changed=true; }
+      if(st.data && st.data.length){ S.straps=st.data; ls_set(K.straps, S.straps); changed=true; }
+      if(ep.data && ep.data.length){ S.episodes=ep.data; ls_set(K.episodes, S.episodes); changed=true; }
+      if(sett.data && sett.data.length){
+        const sObj = {}; sett.data.forEach(row => sObj[row.key] = row.value);
+        S.settings=sObj; ls_set(K.settings, S.settings); changed=true;
+      }
     }finally{__tickHydrating=false;}
     if(changed){try{render(getPath());}catch(_e){}}
-  }catch(e){console.warn('TICK API bootstrap',e);}
+  }catch(e){console.warn('Supabase bootstrap failed',e);}
 }
 if(typeof window!=='undefined')window.addEventListener('load',function(){__tickBootstrapFromApi();});
 
@@ -2684,10 +2692,16 @@ function subDel(){
   S.ckStep=3;renderCK();
 }
 function selPay(m){S.selPay=m;['cod','visa','valu','sympl'].forEach(x=>{const el=document.getElementById('po-'+x);if(el)el.classList.toggle('on',x===m.toLowerCase())})}
-function placeOrder(){
+async function placeOrder(){
   const total=S.cart.reduce((a,i)=>a+i.price*(i.qty||1),0);
-  const oid='TK'+Date.now().toString().slice(-8);
+  const orderData={total:total,customer:S.ckData,payment:S.selPay};
+
+  const { data, error } = await sbCreateOrder(orderData, S.cart);
+  if (error) { toast('❌','Failed to place order'); return; }
+
+  const oid = data.id;
   const order={id:oid,items:[...S.cart],total,customer:{...S.ckData},payment:S.selPay,status:'confirmed',date:Date.now()};
+
   S.orders.push(order);saveOrders();
   const ex=S.custs.find(c=>c.phone===S.ckData.ph);
   if(ex){ex.orders=(ex.orders||0)+1;ex.spent=(ex.spent||0)+total;ex.lastOrder=Date.now();ex.name=S.ckData.fn+' '+S.ckData.ln;if(S.ckData.email)ex.email=S.ckData.email}
@@ -2700,7 +2714,6 @@ function placeOrder(){
   logAudit('Order placed','#'+oid+' · '+fp(total));
   S.cart=[];saveCart();renderCart();updCN();
   S.ckStep=4;renderCK();confetti();
-  try{fetch('/api/public/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:order})}).catch(function(){});}catch(_e){}
 }
 /* ═══ ADMIN LOGIN ═══ */
 function adminLogout(){try{sessionStorage.removeItem('tick_api_token');}catch(_e){}clearSession();go('/admin')}
@@ -2838,7 +2851,17 @@ function admOv(){
     '</tbody></table></div>':'');
 }
 function rsP(id,qty){const p=S.prods.find(x=>x.id===id);if(!p)return;p.stock+=qty;saveProds();logAudit('Restock',p.name+' +'+qty);toast('✓',p.name+' +'+qty+' units');rAdm()}
-function updOS(id,status){const o=S.orders.find(x=>x.id===id);if(!o)return;o.status=status;saveOrders();logAudit('Order status','#'+id+' → '+status);toast('✓','Order #'+id+' → '+status);if(S.admin.sec==='orders')renderOT();else rAdm()}
+async function updOS(id,status){
+  const { error } = await sbUpdateOrderStatus(id, status);
+  if (error) { toast('❌','Failed to update order'); return; }
+
+  const o=S.orders.find(x=>x.id===id);
+  if(o) o.status=status;
+  saveOrders();
+  logAudit('Order status','#'+id+' → '+status);
+  toast('✓','Order #'+id+' → '+status);
+  if(S.admin.sec==='orders') renderOT(); else rAdm();
+}
 function waOrder(phone,oid){if(!phone){toast('⚠️','No phone on record');return}const clean=phone.replace(/[^\d+]/g,'');window.open('https://wa.me/'+clean+'?text='+encodeURIComponent('Hello! Your TICK. order #'+oid+' update.'),'_blank')}
 function expAll(){
   const BOM='\uFEFF';
@@ -3045,17 +3068,39 @@ async function handleGLB(file){
     const r=new FileReader();r.onload=e=>{S.newP.model3d=e.target.result;toast('✓','3D model uploaded!')};r.readAsDataURL(file);
   }catch(e){toast('⚠️','3D model processing failed')}
 }
-function saveProd(isEdit){
+async function saveProd(isEdit){
   const br=document.getElementById('pf-br'),nm=document.getElementById('pf-nm'),pr=document.getElementById('pf-pr'),st=document.getElementById('pf-st');
   if(!br||!br.value.trim()){toast('⚠️','Brand is required');return}
   if(!nm||!nm.value.trim()){toast('⚠️','Watch name is required');return}
   if(!pr||Number(pr.value)<=0){toast('⚠️','Price must be > 0');return}
   if(st&&Number(st.value)<0){toast('⚠️','Stock cannot be negative');return}
   const sp=(document.getElementById('pf-sp')||{}).value;const spV=sp&&Number(sp)>0&&Number(sp)<Number(pr.value)?Number(sp):null;
-  Object.assign(S.newP,{brand:br.value.trim(),name:nm.value.trim(),price:Number(pr.value),salePrice:spV,stock:Number(st.value)||0,cat:(document.getElementById('pf-cat')||{}).value||'dress',move:(document.getElementById('pf-mv')||{}).value||'quartz',mm:(document.getElementById('pf-mm')||{}).value||'',crystal:(document.getElementById('pf-cr')||{}).value||'',water:(document.getElementById('pf-wr')||{}).value||'',strap:(document.getElementById('pf-str')||{}).value||'',power:(document.getElementById('pf-pw')||{}).value||'',descEN:(document.getElementById('pf-den')||{}).value||'',descAR:(document.getElementById('pf-dar')||{}).value||''});
+
+  const productData = {
+    brand: br.value.trim(),
+    name: nm.value.trim(),
+    price: Number(pr.value),
+    sale_price: spV,
+    stock_quantity: Number(st.value)||0,
+    category_id: null, // Would need category mapping
+    move: (document.getElementById('pf-mv')||{}).value||'quartz',
+    mm: (document.getElementById('pf-mm')||{}).value||'',
+    crystal: (document.getElementById('pf-cr')||{}).value||'',
+    water: (document.getElementById('pf-wr')||{}).value||'',
+    strap: (document.getElementById('pf-str')||{}).value||'',
+    power: (document.getElementById('pf-pw')||{}).value||'',
+    description_en: (document.getElementById('pf-den')||{}).value||'',
+    description_ar: (document.getElementById('pf-dar')||{}).value||''
+  };
+
+  const { error } = await sbSaveProduct(productData, isEdit);
+  if (error) { toast('❌','Failed to save product'); return; }
+
+  Object.assign(S.newP, productData);
   if(isEdit){const idx=S.prods.findIndex(x=>x.id===S.newP.id);if(idx>=0)S.prods[idx]={...S.newP};else S.prods.push({...S.newP})}
   else S.prods.push({...S.newP});
-  if(!saveProds()){toast('⚠️','Storage full — could not save. Export data first.');return}
+
+  saveProds();
   logAudit(isEdit?'Product updated':'Product added',S.newP.name);
   hideM();toast('✓',(isEdit?'Updated: ':'Added: ')+S.newP.name);setAdmSec('products');
 }
@@ -3572,6 +3617,7 @@ function testSocLink(k){
 window.ric = window.requestIdleCallback || (cb => setTimeout(() => cb({timeRemaining:()=>16}), 1));
 
 document.addEventListener('DOMContentLoaded',async function(){
+  initSupabase();
   await initHash();
   setTimeout(()=>{const l=document.getElementById('loader');if(l){l.classList.add('gone');setTimeout(()=>l.parentNode&&l.parentNode.removeChild(l),700)}},1900);
   initCursor();
@@ -3700,11 +3746,28 @@ function rHome(){
     sc.addEventListener('mouseenter',()=>{ti.style.transition='transform .08s var(--ease)'});
   }
 }
-function subNL(){
+async function subNL(){
   const el=document.getElementById('nl-email');
   if(!el||!el.value.trim()){toast('⚠️','Please enter your email');return}
   if(!validateEmail(el.value)){toast('⚠️','Please enter a valid email');return}
-  if(!S.subs.find(s=>s.email===el.value.trim())){S.subs.push({email:el.value.trim(),date:Date.now(),source:'newsletter'});saveSubs();try{fetch('/api/public/newsletter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:el.value.trim()})}).catch(function(){});}catch(_e){}const cid=getOrCreateMktCust(null,el.value.trim());if(cid&&S.mktCusts[cid]){S.mktCusts[cid].subscribed=true;S.mktCusts[cid].email=el.value.trim();saveMkt()}}
+
+  const { error } = await supabase.from('subscribers').insert([{
+    email: el.value.trim(),
+    source: 'newsletter'
+  }]);
+
+  if (error && error.code !== '23505') { toast('❌','Failed to join'); return; }
+
+  if(!S.subs.find(s=>s.email===el.value.trim())){
+    S.subs.push({email:el.value.trim(),date:Date.now(),source:'newsletter'});
+    saveSubs();
+    const cid=getOrCreateMktCust(null,el.value.trim());
+    if(cid&&S.mktCusts[cid]){
+      S.mktCusts[cid].subscribed=true;
+      S.mktCusts[cid].email=el.value.trim();
+      saveMkt();
+    }
+  }
   toast('✓','You\'re in! Drop #13 alert coming Monday.');el.value='';
 }
 /* SHOP */
@@ -3848,11 +3911,22 @@ function submitNotify(pid){
   const inp=document.getElementById('notify-in-'+pid);
   if(!inp||!inp.value.trim()){toast('⚠️','Enter your email or phone');return}
   const val=inp.value.trim();
-  const already=S.notifyMe.find(n=>n.pid===pid&&n.contact===val);
-  if(already){toast('✓','Already on the list! We\'ll notify you.');return}
+
+  const em=val.indexOf('@')>=0?val:'';
+  const ph=/^01\d{9}$/.test(val.replace(/\s/g,''))?val.replace(/\s/g,''):'';
+
+  const { error } = await supabase.from('notify_me').insert([{
+    product_id: pid,
+    email: em,
+    phone: ph,
+    contact_raw: val
+  }]);
+
+  if (error) { toast('❌','Failed to subscribe'); return; }
+
   S.notifyMe.push({pid,contact:val,date:Date.now()});
   saveNotifyMe();
-  try{const em=val.indexOf('@')>=0?val:'';const ph=/^01\d{9}$/.test(val.replace(/\s/g,''))?val.replace(/\s/g,''):'';fetch('/api/public/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({productId:pid,email:em,phone:ph})}).catch(function(){});}catch(_e){}
+
   logAudit('NotifyMe','Product #'+pid+' — '+val);
   const box=document.getElementById('notify-box-'+pid);
   if(box)box.innerHTML='<div class="notify-title" style="color:var(--g0)">&#10003; You\'re on the list!</div><div class="notify-sub" style="margin:0">We\'ll notify you at <strong>'+escHTML(val)+'</strong> the moment it\'s back in stock.</div>';
@@ -3900,12 +3974,23 @@ function submitRv(pid){
   const text=(document.getElementById('rv-text-'+pid)||{}).value||'';
   if(!stars){toast('⚠️','Please select a star rating');return}
   if(!text.trim()||text.trim().length<10){toast('⚠️','Please write at least 10 characters');return}
+
+  const user = await sbGetUser();
+  const { error } = await supabase.from('reviews').insert([{
+    product_id: pid,
+    user_id: user?.id,
+    rating: stars,
+    customer_name: name.trim() || 'Anonymous',
+    comment: text.trim()
+  }]);
+
+  if (error) { toast('❌','Failed to save review'); return; }
+
   if(!S.reviews[pid])S.reviews[pid]=[];
   S.reviews[pid].push({stars,name:name.trim()||'Anonymous',text:text.trim(),date:Date.now()});
   saveReviews();
-  try{fetch('/api/public/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({review:{productId:pid,stars:stars,name:name.trim()||'Anonymous',text:text.trim()}})}).catch(function(){})}catch(_e){}
+
   toast('\u2605','Review published! Thank you.');
-  // Re-render the reviews section only
   const wrap=document.querySelector('.reviews-wrap');
   if(wrap)wrap.innerHTML=rvsHTML(pid);
 }
@@ -4151,15 +4236,24 @@ async function rAdminLogin(){
 }
 async function doLogin(){
   const lock=ls_get(K.lockout);if(lock&&lock.until>Date.now())return;
+  const emailEl=document.getElementById('ladm-e');
   const passEl=document.getElementById('ladm-p');if(!passEl||!passEl.value)return;
   const btn=document.getElementById('login-btn');if(btn){btn.disabled=true;btn.textContent='Verifying...'}
   try{
-    const ar=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:passEl.value})});
-    if(ar.ok){
-      const aj=await ar.json();
+    const { data, error } = await sbSignIn(emailEl.value, passEl.value);
+    if(!error){
+      const user = data.user;
+      // Check if user is admin
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+      if (profile?.role !== 'admin') {
+         await sbSignOut();
+         toast('❌','Access denied. Admin only.');
+         if(btn){btn.disabled=false;btn.textContent='Sign In →'}
+         return;
+      }
+
       localStorage.removeItem(K.lockout);ls_set('tick_login_attempts',0);
       setSession();
-      if(aj&&aj.token)sessionStorage.setItem('tick_api_token',aj.token);
       S.admin.sec='overview';
       try{await __tickAdminBootstrapFromApi();}catch(_e){}
       logAudit('Admin login','Successful');rAdm();
