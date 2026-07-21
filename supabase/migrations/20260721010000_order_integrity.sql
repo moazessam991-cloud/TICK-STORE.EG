@@ -58,11 +58,11 @@ begin
     raise exception using message = 'invalid_customer_data';
   end if;
 
-  if case
-       when jsonb_typeof(p_order -> 'total') = 'number'
-         then (p_order ->> 'total')::numeric < 0
-       else true
-     end then
+  if coalesce(jsonb_typeof(p_order -> 'total'), '') <> 'number' then
+    raise exception using message = 'invalid_order_total';
+  end if;
+
+  if (p_order ->> 'total')::numeric < 0 then
     raise exception using message = 'invalid_order_total';
   end if;
 
