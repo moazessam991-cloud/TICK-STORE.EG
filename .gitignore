@@ -1,3 +1,23 @@
 node_modules/
 data/
 *.log
+
+# Local environment files (keep the documented placeholder file trackable)
+.env
+.env.*
+!.env.example
+
+# Local Supabase CLI state
+supabase/.temp/
+
+# Private service-account material
+*firebase-adminsdk*.json
+*service-account*.json
+*service_account*.json
+firebase-service-account.json
+
+# Local OS/editor artifacts
+.DS_Store
+*.tmp
+*.temp
+*~

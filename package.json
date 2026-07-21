@@ -13,6 +13,7 @@
     "stage5": "node scripts/stage5-test.js",
     "stage6": "node scripts/stage6-test.js",
     "stage7": "node scripts/stage7-twilio-normalize.js",
+    "test:audit": "node scripts/audit-business-logic-test.js",
     "test:all": "npm run stage1 && npm run stage2 && npm run stage3 && npm run stage4 && npm run stage5 && npm run stage6 && npm run stage7",
     "seed:extract": "node scripts/extract-seed-from-html.js"
   },
@@ -20,6 +21,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
     "better-sqlite3": "^11.7.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -27,6 +29,7 @@
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
-    "twilio": "^5.4.5"
+    "twilio": "^5.4.5",
+    "ws": "^8.21.0"
   }
 }

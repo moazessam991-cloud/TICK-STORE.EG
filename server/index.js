@@ -13,19 +13,56 @@ const jwt = require('jsonwebtoken');
 const dbApi = require('./database');
 const { seedIfEmpty } = require('./defaults');
 const twilioWa = require('./twilioWhatsApp');
+const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');
+
+global.WebSocket = WebSocket;
 
 function sanitizeString(str, maxLen = 1000) {
   if (typeof str !== 'string') return '';
   return str.trim().slice(0, maxLen).replace(/<[^>]*>?/gm, ''); // Basic tag removal
 }
 
+function escapeHtml(value) {
+  const entities = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  return String(value == null ? '' : value).replace(/[&<>"']/g, (character) => entities[character]);
+}
+
 const SALT = process.env.TICK_PW_SALT || 'TICK_CAIRO_2026_SALT_MZ';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const configuredAdminHash = process.env.TICK_ADMIN_HASH;
+const configuredAdminPassword = process.env.TICK_ADMIN_PASSWORD;
+
+if (!configuredAdminHash && !configuredAdminPassword && IS_PRODUCTION) {
+  throw new Error('Missing required environment variable: TICK_ADMIN_HASH or TICK_ADMIN_PASSWORD');
+}
+
 const ADMIN_PASS_HASH =
-  process.env.TICK_ADMIN_HASH ||
-  crypto.createHash('sha256').update(SALT + (process.env.TICK_ADMIN_PASSWORD || 'ozaa7221274$')).digest('hex');
-const JWT_SECRET = process.env.TICK_JWT_SECRET || 'tick-dev-secret-change-me';
-if (JWT_SECRET === 'tick-dev-secret-change-me') {
-  console.warn('WARNING: TICK_JWT_SECRET is using the default development secret. Please set a strong random string in production.');
+  configuredAdminHash ||
+  (configuredAdminPassword
+    ? crypto.createHash('sha256').update(SALT + configuredAdminPassword).digest('hex')
+    : crypto.randomBytes(32).toString('hex'));
+
+if (!configuredAdminHash && !configuredAdminPassword) {
+  console.warn('TICK_ADMIN_HASH or TICK_ADMIN_PASSWORD is not configured; admin login is disabled.');
+}
+
+const configuredJwtSecret = process.env.TICK_JWT_SECRET;
+
+if (!configuredJwtSecret && IS_PRODUCTION) {
+  throw new Error('Missing required environment variable: TICK_JWT_SECRET');
+}
+
+const JWT_SECRET = configuredJwtSecret || crypto.randomBytes(32).toString('hex');
+
+if (!configuredJwtSecret) {
+  console.warn('TICK_JWT_SECRET is not configured; using an ephemeral development secret.');
 }
 const PORT = Number(process.env.PORT || 38471);
 const HTML_CANDIDATES = [
@@ -38,6 +75,108 @@ const HTML_PATH = HTML_CANDIDATES.find((p) => fs.existsSync(p)) || HTML_CANDIDAT
 const db = dbApi.openDb();
 seedIfEmpty(db, dbApi);
 
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  'https://baojwaqmriuxcnztixmr.supabase.co';
+
+const SUPABASE_ANON_KEY =
+  process.env.SUPABASE_ANON_KEY ||
+  'sb_publishable_mNK6WYCml8BeBiO5GcKtmw_jNgklhdi';
+
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const sbAdmin = SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    })
+  : null;
+
+const SUPABASE_PAGE_SIZE = 1000;
+
+async function fetchAllSupabaseRows(queryFactory) {
+  const rows = [];
+
+  for (let from = 0; ; from += SUPABASE_PAGE_SIZE) {
+    const { data, error } = await queryFactory().range(
+      from,
+      from + SUPABASE_PAGE_SIZE - 1
+    );
+
+    if (error) throw error;
+
+    const page = Array.isArray(data) ? data : [];
+    rows.push(...page);
+
+    if (page.length < SUPABASE_PAGE_SIZE) break;
+  }
+
+  return rows;
+}
+
+function orderCountsAsRevenue(order) {
+  return !['cancelled', 'refunded'].includes(
+    String(order && order.status || '').toLowerCase()
+  );
+}
+
+async function sendOrderEmail(order) {
+  if (!process.env.RESEND_API_KEY || !process.env.ADMIN_EMAIL) return;
+
+  const items = (order.items || [])
+    .map(i => `• ${escapeHtml(i.name)} × ${escapeHtml(i.qty)} = ${escapeHtml(i.price * i.qty)} EGP`)
+    .join("<br>");
+
+  const html = `
+    <h2>🛒 New TICK Order</h2>
+
+    <p><strong>Customer:</strong> ${escapeHtml(order.customer.fn)} ${escapeHtml(order.customer.ln)}</p>
+    <p><strong>Phone:</strong> ${escapeHtml(order.customer.ph)}</p>
+    <p><strong>Email:</strong> ${escapeHtml(order.customer.email || "-")}</p>
+    <p><strong>Payment:</strong> ${escapeHtml(order.payment)}</p>
+    <p><strong>Total:</strong> ${escapeHtml(order.total)} EGP</p>
+
+    <hr>
+
+    <h3>Items</h3>
+
+    ${items}
+
+    <hr>
+
+    <p><strong>Address:</strong></p>
+
+    <p>
+      ${escapeHtml(order.customer.area)}<br>
+      ${escapeHtml(order.customer.addr)}
+    </p>
+  `;
+
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: "TICK <onboarding@resend.dev>",
+      to: process.env.ADMIN_EMAIL,
+      subject: `🛒 New Order - ${order.customer.fn}`,
+      html,
+    }),
+  });
+  await res.text();
+
+  console.log("RESEND STATUS:", res.status);
+  if (!res.ok) {
+    console.error(`Resend failed (${res.status})`);
+  }
+}
 const app = express();
 if (process.env.TRUST_PROXY === '1') {
   app.set('trust proxy', 1);
@@ -48,7 +187,7 @@ app.use(helmet({
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
-
+app.use(express.static(path.join(__dirname, '..', 'public')));
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -105,7 +244,70 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'invalid_token' });
   }
 }
+app.post('/api/admin/push-token', requireAuth, async (req, res) => {
+  try {
+    if (!sbAdmin) {
+      console.error('SUPABASE_SERVICE_ROLE_KEY is not configured');
 
+      return res.status(503).json({
+        error: 'push_notifications_not_configured',
+      });
+    }
+
+    const token =
+      typeof req.body?.token === 'string'
+        ? req.body.token.trim()
+        : '';
+
+    const deviceName = sanitizeString(
+      req.body?.deviceName || req.body?.device_name || 'Admin device',
+      120
+    );
+
+    const platform = sanitizeString(
+      req.body?.platform || 'web',
+      40
+    );
+
+    if (token.length < 50 || token.length > 4096) {
+      return res.status(400).json({
+        error: 'invalid_push_token',
+      });
+    }
+
+    const { error } = await sbAdmin
+      .from('push_tokens')
+      .upsert(
+        {
+          token,
+          device_name: deviceName || 'Admin device',
+          platform: platform || 'web',
+          last_seen: new Date().toISOString(),
+        },
+        {
+          onConflict: 'token',
+        }
+      );
+
+    if (error) {
+      console.error('Failed to save admin push token:', error.message);
+
+      return res.status(500).json({
+        error: 'push_token_save_failed',
+      });
+    }
+
+    return res.json({
+      ok: true,
+    });
+  } catch (error) {
+    console.error('Admin push token endpoint failed:', error);
+
+    return res.status(500).json({
+      error: 'internal_error',
+    });
+  }
+});
 const loginFails = new Map();
 function loginThrottle(ip) {
   const now = Date.now();
@@ -151,39 +353,25 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ ok: true, role: req.admin.role });
 });
 
-/* ─── Stage 3: public catalog ─── */
-app.get('/api/public/bootstrap', (req, res) => {
-  res.json({
-    products: dbApi.getJson(db, 'products') || [],
-    archive: dbApi.getJson(db, 'archive') || [],
-    straps: dbApi.getJson(db, 'straps') || [],
-    episodes: dbApi.getJson(db, 'episodes') || [],
-    settings: dbApi.getJson(db, 'settings') || {},
-    reviews: dbApi.getJson(db, 'reviews') || {},
-  });
-});
+/* ─── Stage 3: admin dashboard + local-only KV ───
+   /api/public/bootstrap used to serve products/archive/straps/episodes/
+   settings/reviews from this same local dbApi store, but index.html has no
+   remaining caller for it — the storefront hydrates all of those straight
+   from Supabase now (__tickBootstrapFromApi() / sbGetProducts() etc in
+   supabase-client.js), so this route was removed as dead code rather than
+   left to silently drift out of sync with the real data. ─── */
 
-const ADMIN_KEYS = new Set([
-  'products',
-  'archive',
-  'straps',
-  'episodes',
-  'settings',
-  'orders',
-  'customers',
-  'subscribers',
-  'drops',
-  'audit',
-  'reviews',
-  'notify_me',
-]);
+// Only drops/audit remain here: everything else this set used to gate
+// (products, archive, straps, episodes, settings, orders, customers,
+// subscribers, reviews, notify_me) is Supabase's responsibility now — see
+// /api/admin/bootstrap below, which reads those straight from Supabase, and
+// supabase-client.js on the frontend, which writes them there directly.
+// drops/announces have no Supabase table by design and stay local-only.
+const ADMIN_KEYS = new Set(['drops', 'audit']);
 
 app.get('/api/admin/kv/:key', requireAuth, (req, res) => {
   const key = req.params.key;
   if (!ADMIN_KEYS.has(key)) return res.status(400).json({ error: 'unknown_key' });
-  if (key === 'orders') {
-    return res.json({ key, value: dbApi.listOrders(db, 2000) });
-  }
   res.json({ key, value: dbApi.getJson(db, key) });
 });
 
@@ -191,11 +379,7 @@ app.put('/api/admin/kv/:key', requireAuth, (req, res) => {
   const key = req.params.key;
   if (!ADMIN_KEYS.has(key)) return res.status(400).json({ error: 'unknown_key' });
   if (!('value' in req.body)) return res.status(400).json({ error: 'missing_value' });
-  if (key === 'orders' && Array.isArray(req.body.value)) {
-    for (const o of req.body.value) dbApi.appendOrder(db, o);
-  } else {
-    dbApi.setJson(db, key, req.body.value);
-  }
+  dbApi.setJson(db, key, req.body.value);
   res.json({ ok: true, key });
 });
 
@@ -204,28 +388,240 @@ app.post('/api/admin/sync', requireAuth, (req, res) => {
   let n = 0;
   for (const key of ADMIN_KEYS) {
     if (key in body) {
-      if (key === 'orders' && Array.isArray(body[key])) {
-        for (const o of body[key]) dbApi.appendOrder(db, o);
-      } else {
-        dbApi.setJson(db, key, body[key]);
-      }
+      dbApi.setJson(db, key, body[key]);
       n += 1;
     }
   }
   res.json({ ok: true, updated: n });
 });
 
-app.get('/api/admin/bootstrap', requireAuth, (req, res) => {
-  // Returns the current server state for the admin dashboard.
-  const out = {};
-  for (const key of ADMIN_KEYS) {
-    if (key === 'orders') {
-      out[key] = dbApi.listOrders(db, 1000);
-    } else {
-      out[key] = dbApi.getJson(db, key);
-    }
+app.get('/api/admin/bootstrap', requireAuth, async (req, res) => {
+  // Orders/customers/subscribers/notify_me/reviews/settings all now live in
+  // Supabase — the frontend writes them there directly (sbCreateOrder,
+  // sbSubscribeEmail, the raw sbClient inserts for reviews/notify_me,
+  // sbSaveProduct/sbSaveSetting/etc). Reading them back from this local
+  // dbApi store, as this endpoint used to, meant admin almost never saw real
+  // customer activity: a customer's own browser has no tick_api_token, so
+  // none of a real customer's checkout/review/notify-me/newsletter writes
+  // ever reached the Express-side store to begin with — only drops/audit
+  // (no Supabase table by design) still come from dbApi below.
+  if (!sbAdmin) {
+    return res.status(503).json({ error: 'supabase_admin_not_configured' });
   }
-  res.json(out);
+
+  try {
+    const [orderRows, subscriberRows, notifyRows, reviewRows, settingRows] = await Promise.all([
+      fetchAllSupabaseRows(() => sbAdmin
+        .from('orders')
+        .select('*, order_items(*, products(name, emoji, brand, categories(slug)))')
+        .order('created_at', { ascending: false })),
+      fetchAllSupabaseRows(() => sbAdmin
+        .from('subscribers')
+        .select('*')
+        .order('subscribed_at', { ascending: false })),
+      fetchAllSupabaseRows(() => sbAdmin
+        .from('notify_me')
+        .select('*')
+        .order('created_at', { ascending: false })),
+      fetchAllSupabaseRows(() => sbAdmin
+        .from('reviews')
+        .select('*')
+        .order('created_at', { ascending: false })),
+      fetchAllSupabaseRows(() => sbAdmin
+        .from('settings')
+        .select('*')
+        .order('key', { ascending: true })),
+    ]);
+
+    // Reshape each Supabase row into the {id, items, total, customer,
+    // payment, status, notes, date} object placeOrder() already builds
+    // locally at checkout, so the admin dashboard needs no rendering changes.
+    const orders = orderRows.map((row) => ({
+      id: row.id,
+      items: (row.order_items || []).map((it) => ({
+        pid: it.product_id,
+        name: (it.metadata && it.metadata.product_name) || (it.products && it.products.name) || 'Product',
+        emoji: (it.metadata && it.metadata.emoji) || (it.products && it.products.emoji) || (it.metadata && it.metadata.type === 'strap' ? '🪢' : '⌚'),
+        brand: (it.metadata && it.metadata.brand) || (it.products && it.products.brand) || '',
+        price: Number(it.price_at_purchase) || 0,
+        qty: it.quantity || 1,
+        isSt: !!(it.metadata && it.metadata.type === 'strap'),
+        strapConfig: (it.metadata && it.metadata.config) || null,
+        category_slug:
+          (it.metadata && it.metadata.category_slug) ||
+          (it.products && it.products.categories && it.products.categories.slug) ||
+          '',
+      })),
+      total: Number(row.total_amount) || 0,
+      // shipping_address is the full checkout object (fn/ln/ph/email/area/
+      // city/addr/notes) sbCreateOrder stores verbatim — it's already in the
+      // exact shape the admin UI's o.customer.* reads expect, unlike the
+      // flattened customer_name/_phone/_email columns, so it's preferred
+      // here and those columns are only a fallback for very old rows.
+      customer: row.shipping_address || {
+        fn: row.customer_name || '',
+        ln: '',
+        ph: row.customer_phone || '',
+        email: row.customer_email || '',
+        area: '',
+      },
+      payment: row.payment_method || '',
+      paymentStatus: row.payment_status || 'unpaid',
+      status: row.status || 'pending',
+      notes: row.notes || (row.shipping_address && row.shipping_address.notes) || '',
+      date: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+    }));
+
+    // No dedicated Supabase table for customers — derive the same
+    // {id,name,phone,email,area,orders,spent,joined,lastOrder} shape the old
+    // dbApi-backed list used, by aggregating the real orders above (grouped
+    // by phone), so this is a read-time view over Supabase's orders rather
+    // than a second, independently-written store.
+    const customersByPhone = new Map();
+    for (const o of orders) {
+      const phone = o.customer && o.customer.ph;
+      if (!phone) continue;
+      const countsAsRevenue = orderCountsAsRevenue(o);
+      const existing = customersByPhone.get(phone);
+      if (existing) {
+        existing.orders += countsAsRevenue ? 1 : 0;
+        existing.spent += countsAsRevenue ? o.total : 0;
+        if (o.date > existing.lastOrder) existing.lastOrder = o.date;
+        if (o.date < existing.joined) existing.joined = o.date;
+        if (o.customer.email) existing.email = o.customer.email;
+        if (o.customer.area) existing.area = o.customer.area;
+      } else {
+        customersByPhone.set(phone, {
+          id: `c_${phone}`,
+          name: `${o.customer.fn || ''} ${o.customer.ln || ''}`.trim(),
+          phone,
+          email: o.customer.email || '',
+          area: o.customer.area || '',
+          orders: countsAsRevenue ? 1 : 0,
+          spent: countsAsRevenue ? o.total : 0,
+          joined: o.date,
+          lastOrder: o.date,
+        });
+      }
+    }
+
+    const subscribers = subscriberRows.map((row) => ({
+      email: row.email,
+      date: row.subscribed_at ? new Date(row.subscribed_at).getTime() : Date.now(),
+      source: row.source || 'newsletter',
+    }));
+
+    const notify_me = notifyRows.map((row) => ({
+      pid: row.product_id || row.pid,
+      contact: row.contact_raw || row.email || row.phone || '',
+      date: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+    }));
+
+    // Grouped by product id, each entry normalized the same way
+    // normalizeReview() does on the frontend (rating->stars, customer_name->
+    // name, comment->text, created_at->epoch ms).
+    const reviews = {};
+    for (const row of reviewRows) {
+      const key = String(row.product_id);
+      if (!reviews[key]) reviews[key] = [];
+      reviews[key].push({
+        id: row.id,
+        stars: row.rating != null ? row.rating : 0,
+        name: row.customer_name || 'Anonymous',
+        text: row.comment || '',
+        date: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+      });
+    }
+
+    const settings = {};
+    for (const row of settingRows) settings[row.key] = row.value;
+
+    res.json({
+      orders,
+      customers: Array.from(customersByPhone.values()),
+      subscribers,
+      notify_me,
+      reviews,
+      settings,
+      // drops/audit: no Supabase table by design (see ADMIN_KEYS) — still
+      // Express/local dbApi, the only persistence they have.
+      drops: dbApi.getJson(db, 'drops') || [],
+      audit: dbApi.getJson(db, 'audit') || [],
+    });
+  } catch (e) {
+    console.error('admin bootstrap error', e);
+    res.status(500).json({ error: 'server' });
+  }
+});
+
+app.patch('/api/admin/orders/:id/status', requireAuth, async (req, res) => {
+  if (!sbAdmin) {
+    return res.status(503).json({ error: 'supabase_admin_not_configured' });
+  }
+
+  const status = sanitizeString(req.body && req.body.status, 20).toLowerCase();
+  const allowed = new Set(['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded']);
+
+  if (!allowed.has(status)) {
+    return res.status(400).json({ error: 'invalid_status' });
+  }
+
+  const { data, error } = await sbAdmin
+    .from('orders')
+    .update({ status })
+    .eq('id', req.params.id)
+    .select('id, status')
+    .maybeSingle();
+
+  if (error) {
+    console.error('order status update error', error);
+    return res.status(500).json({ error: 'order_status_update_failed' });
+  }
+
+  if (!data) return res.status(404).json({ error: 'order_not_found' });
+  return res.json({ ok: true, order: data });
+});
+
+app.post('/api/admin/products/:id/restock', requireAuth, async (req, res) => {
+  if (!sbAdmin) {
+    return res.status(503).json({ error: 'supabase_admin_not_configured' });
+  }
+
+  const quantity = Number(req.body && req.body.quantity);
+  if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 100000) {
+    return res.status(400).json({ error: 'invalid_restock_quantity' });
+  }
+
+  const { data, error } = await sbAdmin.rpc('adjust_product_stock', {
+    p_product_id: req.params.id,
+    p_delta: quantity,
+  });
+
+  if (error) {
+    console.error('product restock error', error);
+    return res.status(500).json({ error: 'product_restock_failed' });
+  }
+
+  if (!data) return res.status(404).json({ error: 'product_not_found' });
+  return res.json({ ok: true, product: data });
+});
+
+app.delete('/api/admin/notify-me', requireAuth, async (req, res) => {
+  if (!sbAdmin) {
+    return res.status(503).json({ error: 'supabase_admin_not_configured' });
+  }
+
+  const { error } = await sbAdmin
+    .from('notify_me')
+    .delete()
+    .not('id', 'is', null);
+
+  if (error) {
+    console.error('notify-me clear error', error);
+    return res.status(500).json({ error: 'notify_me_clear_failed' });
+  }
+
+  return res.json({ ok: true });
 });
 
 function twilioWebhookFullUrl(req) {
@@ -267,8 +663,11 @@ app.post('/api/admin/whatsapp/send', requireAuth, async (req, res) => {
   }
 });
 
-/* ─── Stage 4: checkout + subscribers ─── */
-app.post('/api/public/order', publicApiLimiter, (req, res) => {
+/* ─── Stage 4: checkout compatibility route ───
+   The storefront uses the create-order Edge Function. Keep this legacy
+   endpoint on the exact same database transaction so reconnecting an older
+   client cannot reintroduce a partial/untrusted second order path. ─── */
+app.post('/api/public/order', publicApiLimiter, async (req, res) => {
   const order = req.body && req.body.order;
   if (!order || typeof order.id !== 'string' || !Array.isArray(order.items) || order.items.length === 0) {
     return res.status(400).json({ error: 'invalid_order' });
@@ -290,106 +689,58 @@ app.post('/api/public/order', publicApiLimiter, (req, res) => {
   }
   order.notes = sanitizeString(order.notes, 500);
 
+  if (!sbAdmin) {
+    return res.status(503).json({ error: 'supabase_admin_not_configured' });
+  }
+
   try {
-    dbApi.appendOrder(db, order);
-    const phone = order.customer && order.customer.ph;
-    if (phone) {
-      const custs = dbApi.getJson(db, 'customers') || [];
-      const total = Number(order.total) || 0;
-      const ex = custs.find((c) => c.phone === phone);
-      if (ex) {
-        ex.orders = (ex.orders || 0) + 1;
-        ex.spent = (ex.spent || 0) + total;
-        ex.lastOrder = Date.now();
-        if (order.customer.fn) ex.name = `${order.customer.fn} ${order.customer.ln || ''}`.trim();
-        if (order.customer.email) ex.email = order.customer.email;
-      } else {
-        custs.push({
-          id: `c_${Date.now()}`,
-          name: `${(order.customer.fn || '').trim()} ${(order.customer.ln || '').trim()}`.trim(),
-          phone,
-          email: order.customer.email || '',
-          area: order.customer.area || '',
-          orders: 1,
-          spent: total,
-          joined: Date.now(),
-          lastOrder: Date.now(),
-        });
-      }
-      dbApi.setJson(db, 'customers', custs);
-    }
+    const orderData = {
+      total: Number(order.total),
+      customer: order.customer || {},
+      payment: order.payment,
+      notes: order.notes,
+      checkoutToken: order.checkoutToken || crypto.randomUUID(),
+    };
+    const items = order.items.map((it) => ({
+      pid: String(it.pid || ''),
+      qty: Number(it.qty),
+      price: Number(it.price),
+      isSt: !!it.isSt,
+      strapConfig: it.strapConfig || null,
+      metadata: it.metadata || null,
+    }));
+    const { data: savedOrder, error: orderErr } = await sbAdmin.rpc(
+      'create_order_with_stock',
+      { p_order: orderData, p_items: items }
+    );
+    if (orderErr) throw orderErr;
+    if (!savedOrder || !savedOrder.id) throw new Error('order_creation_failed');
+
     const notifyTo = process.env.TWILIO_ORDER_NOTIFY_TO;
     if (notifyTo && twilioWa.isConfigured()) {
-      const total = Number(order.total) || 0;
+      const total = Number(savedOrder.total_amount) || 0;
       const cph = (order.customer && order.customer.ph) || '—';
       const pay = order.payment || '—';
-      const msg = `New TICK order #${order.id}\nTotal: ${total} EGP\nPhone: ${cph}\nPayment: ${pay}`;
+      const msg = `New TICK order #${savedOrder.id}\nTotal: ${total} EGP\nPhone: ${cph}\nPayment: ${pay}`;
       twilioWa.sendWhatsApp({ to: notifyTo, body: msg }).catch((err) => console.error('Twilio order notify', err.message));
     }
-    return res.json({ ok: true, id: order.id });
+    await sendOrderEmail({ ...order, total: Number(savedOrder.total_amount) || 0 });
+    return res.json({ ok: true, id: savedOrder.id });
   } catch (e) {
     console.error('order error', e);
     return res.status(500).json({ error: 'server' });
   }
 });
 
-app.post('/api/public/review', publicApiLimiter, (req, res) => {
-  const payload = req.body && req.body.review;
-  const productId = payload && (payload.productId ?? payload.pid);
-  const stars = payload && payload.stars;
-  const name = payload && payload.name;
-  const text = payload && payload.text;
-
-  const pidKey = productId == null ? null : String(productId);
-  const s = Number(stars);
-  const nm = sanitizeString(name, 60);
-  const tx = sanitizeString(text, 1000);
-
-  if (!pidKey) return res.status(400).json({ error: 'missing_product' });
-  if (!s || s < 1 || s > 5) return res.status(400).json({ error: 'invalid_stars' });
-  if (!tx || tx.length < 10) return res.status(400).json({ error: 'invalid_text' });
-
-  try {
-    const reviews = dbApi.getJson(db, 'reviews') || {};
-    if (!Array.isArray(reviews[pidKey])) reviews[pidKey] = [];
-    reviews[pidKey].push({ stars: Math.round(s), name: nm || 'Anonymous', text: tx, date: Date.now() });
-    // Prevent unbounded growth
-    if (reviews[pidKey].length > 300) reviews[pidKey] = reviews[pidKey].slice(-300);
-    dbApi.setJson(db, 'reviews', reviews);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('review error', e);
-    return res.status(500).json({ error: 'server' });
-  }
-});
-
-app.post('/api/public/newsletter', publicApiLimiter, (req, res) => {
-  const email = (req.body && req.body.email && String(req.body.email).trim().toLowerCase()) || '';
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: 'invalid_email' });
-  }
-  const subs = dbApi.getJson(db, 'subscribers') || [];
-  if (!subs.some((s) => (s.email || s) === email)) {
-    subs.push({ email, ts: Date.now() });
-    dbApi.setJson(db, 'subscribers', subs);
-  }
-  return res.json({ ok: true });
-});
-
-app.post('/api/public/notify', publicApiLimiter, (req, res) => {
-  const productId = req.body && req.body.productId;
-  if (productId == null) return res.status(400).json({ error: 'missing_product' });
-  const row = {
-    productId,
-    phone: (req.body.phone && String(req.body.phone).trim()) || '',
-    email: (req.body.email && String(req.body.email).trim().toLowerCase()) || '',
-    ts: Date.now(),
-  };
-  const list = dbApi.getJson(db, 'notify_me') || [];
-  list.push(row);
-  dbApi.setJson(db, 'notify_me', list.slice(-2000));
-  return res.json({ ok: true });
-});
+/* REMOVED as dead code (migration cleanup): /api/public/review,
+   /api/public/newsletter, /api/public/notify. index.html has zero
+   fetch('/api/public/...') call sites for any of these — reviews and
+   notify-me insert straight into Supabase via raw window.sbClient.from(...)
+   calls, and newsletter signup goes through sbSubscribeEmail() — so these
+   routes had no caller, and the local dbApi shape they wrote (e.g. reviews
+   keyed by {stars,name,text,date}; notify_me keyed by "productId") had
+   already drifted from the real Supabase columns (rating/customer_name/
+   comment; product_id) that the live code paths actually use. */
 
 app.listen(PORT, () => {
   console.log(`TICK API listening on http://127.0.0.1:${PORT}/api/health`);
