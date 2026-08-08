@@ -44,7 +44,6 @@ const KEYS = [
   'subscribers',
   'drops',
   'audit',
-  'reviews',
   'notify_me',
 ];
 

@@ -5,24 +5,34 @@
    Never uses the name "supabase" for the client to avoid
    colliding with window.supabase set by the CDN bundle.
 ═══════════════════════════════════════════════════ */
-const SUPABASE_CONFIG = {
-  url: 'https://baojwaqmriuxcnztixmr.supabase.co',
-  anonKey: 'sb_publishable_mNK6WYCml8BeBiO5GcKtmw_jNgklhdi'
-};
-
 // The initialized client lives here — accessed as window.sbClient from any script.
 // We do NOT name it "supabase" because the CDN bundle sets window.supabase to the
 // SDK namespace object, and we must not overwrite or shadow that.
 window.sbClient = null;
 
-function initSupabase() {
+async function initSupabase() {
   // @supabase/supabase-js v2 CDN bundle exposes window.supabase with .createClient()
   const sdk = window.supabase;
   if (!sdk || typeof sdk.createClient !== 'function') {
     console.error('[Supabase] SDK not ready — make sure the CDN <script> runs before supabase-client.js');
-    return;
+    return false;
   }
-  window.sbClient = sdk.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+  try {
+    const response = await fetch('/api/public/runtime-config', { cache: 'no-store' });
+    const config = await response.json();
+    if (!response.ok || typeof config.supabase_url !== 'string' || typeof config.supabase_publishable_key !== 'string') {
+      throw new Error('invalid_runtime_config');
+    }
+    const parsedUrl = new URL(config.supabase_url);
+    if (parsedUrl.protocol !== 'https:' || config.supabase_publishable_key.length < 20) {
+      throw new Error('invalid_runtime_config');
+    }
+    window.sbClient = sdk.createClient(parsedUrl.toString(), config.supabase_publishable_key);
+    return true;
+  } catch (_error) {
+    console.error('[Supabase] Runtime configuration is unavailable');
+    return false;
+  }
 }
 
 // ─── internal helper so we fail fast with a clear message ───
@@ -31,34 +41,6 @@ function _db() {
   return window.sbClient;
 }
 
-// ─── AUTHENTICATION ───
-async function sbSignUp(email, password, fullName) {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  const { data, error } = await _db().auth.signUp({
-    email,
-    password,
-    options: { data: { full_name: fullName } }
-  });
-  return { data, error };
-}
-
-async function sbSignIn(email, password) {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  const { data, error } = await _db().auth.signInWithPassword({ email, password });
-  return { data, error };
-}
-
-async function sbSignOut() {
-  if (!window.sbClient) return { error: null };
-  const { error } = await _db().auth.signOut();
-  return { error };
-}
-
-async function sbGetUser() {
-  if (!window.sbClient) return null;
-  const { data: { user } } = await _db().auth.getUser();
-  return user;
-}
 // ─── DATA FETCHING ───
 async function sbGetProducts() {
   if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
@@ -118,15 +100,13 @@ async function sbGetEpisodes() {
 }
 
 async function sbGetSettings() {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  const { data, error } = await _db().from('settings').select('*');
-  return { data, error };
-}
-
-async function sbGetReviews(productId) {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  const { data, error } = await _db().from('reviews').select('*').eq('product_id', productId).order('created_at', { ascending: false });
-  return { data, error };
+  try {
+    const response = await fetch('/api/public/settings', { cache: 'no-store' });
+    const payload = await apiJson(response);
+    return { data: payload.settings || {}, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
 }
 
 // ─── SUBSCRIBERS (newsletter) — TODO A ───
@@ -168,6 +148,19 @@ async function sbCreateOrder(orderData, items) {
   });
 
   if (error) {
+    let payload = null;
+    try {
+      if (error.context && typeof error.context.json === 'function') {
+        payload = await error.context.json();
+      }
+    } catch (_parseError) {}
+    if (payload && payload.error) {
+      const requestError = new Error(payload.error);
+      requestError.code = payload.error;
+      requestError.status = error.context && error.context.status;
+      requestError.retryAfter = payload.retry_after_seconds || null;
+      return { data: null, error: requestError };
+    }
     return {
       data: null,
       error,
@@ -179,97 +172,205 @@ async function sbCreateOrder(orderData, items) {
     error: null,
   };
 }
-// ─── STORAGE ───
-async function sbUploadImage(bucket, path, file) {
-  if (!window.sbClient) return { publicUrl: null, error: new Error('Supabase not initialised') };
-  const { data, error } = await _db().storage.from(bucket).upload(path, file);
-  if (error) return { publicUrl: null, error };
-  const { data: { publicUrl } } = _db().storage.from(bucket).getPublicUrl(data.path);
-  return { publicUrl, error: null };
+
+async function apiJson(response) {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error || 'Request failed');
+    error.code = payload.error || 'request_failed';
+    error.status = response.status;
+    error.order = payload.order || null;
+    error.cleanupFailed = payload.cleanup_failed === true;
+    error.imageDeleted = payload.image_deleted === true;
+    error.productDeleted = payload.product_deleted === true;
+    throw error;
+  }
+  return payload;
 }
 
-// ─── PRODUCT IMAGES (product_images table) — TODO B ───
-// Bucket name assumed: 'product-images' (see SQL/setup notes handed to the
-// user — the bucket and its RLS policies must be created before this works).
-const PRODUCT_IMAGE_BUCKET = 'product-images';
+async function sbGetInstapayOrder(orderId, accessToken) {
+  try {
+    const response = await fetch(
+      '/api/public/instapay/orders/' + encodeURIComponent(orderId) + '/status',
+      {
+        method: 'GET',
+        headers: { 'X-Payment-Access-Token': accessToken },
+        cache: 'no-store'
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload.order, payment: payload.payment || null, error: null };
+  } catch (error) {
+    return { data: error.order || null, payment: null, error };
+  }
+}
+
+async function sbSubmitInstapayProof(orderId, accessToken, reference, senderName, file) {
+  try {
+    const response = await fetch(
+      '/api/public/instapay/orders/' + encodeURIComponent(orderId) + '/proof',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type,
+          'X-Payment-Access-Token': accessToken,
+          'X-Payment-Reference': encodeURIComponent(reference),
+          'X-Payment-Sender-Name': encodeURIComponent(senderName)
+        },
+        body: file
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload.order, error: null };
+  } catch (error) {
+    return { data: error.order || null, error };
+  }
+}
+// ─── PRODUCT IMAGES ───
+// Public image rows/URLs remain readable. Every mutation goes through the
+// Express Admin JWT API; the browser never receives or submits Storage paths.
 
 async function sbGetProductImages(productId) {
   if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  return await _db().from('product_images').select('*').eq('product_id', productId).order('position', { ascending: true });
-}
-
-// Uploads one file for a given product at a given display position and
-// inserts the corresponding product_images row. Returns the inserted row
-// (id, url, position, storage_path) so the caller can track it locally.
-async function sbUploadProductImage(productId, file, position) {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  const safeName = (file.name || 'photo').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const path = productId + '/' + Date.now() + '_' + position + '_' + safeName;
-  const { publicUrl, error: upErr } = await sbUploadImage(PRODUCT_IMAGE_BUCKET, path, file);
-  if (upErr) return { data: null, error: upErr };
-  const { data, error } = await _db()
+  return await _db()
     .from('product_images')
-    .insert([{ product_id: productId, url: publicUrl, position, storage_path: path }])
-    .select()
-    .single();
-  return { data, error };
+    .select('id, product_id, url, position, created_at')
+    .eq('product_id', productId)
+    .order('position', { ascending: true });
 }
 
-// Deletes both the Storage object (if storagePath is known) and the
-// product_images row. Never throws — a missing/already-gone storage object
-// should not block removing the DB row.
-async function sbDeleteProductImage(imageId, storagePath) {
-  if (!window.sbClient) return { error: new Error('Supabase not initialised') };
-  if (storagePath) {
-    try { await _db().storage.from(PRODUCT_IMAGE_BUCKET).remove([storagePath]); } catch (e) { console.warn('[Supabase] storage remove failed', e); }
-  }
-  const { error } = await _db().from('product_images').delete().eq('id', imageId);
-  return { error };
-}
+async function sbUploadProductImage(productId, file) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
 
-async function sbSetProductImagePosition(imageId, position) {
-  if (!window.sbClient) return { error: new Error('Supabase not initialised') };
-  return await _db().from('product_images').update({ position }).eq('id', imageId);
-}
-
-// Deletes a product's images (Storage + rows) and then the product row
-// itself. Used by delProd() so deleting a watch/archive/strap-type doesn't
-// leave orphaned files in Storage or orphaned product_images rows behind.
-async function sbDeleteProduct(productId) {
-  if (!window.sbClient) return { error: new Error('Supabase not initialised') };
   try {
-    const { data: imgs } = await _db().from('product_images').select('*').eq('product_id', productId);
-    for (const row of (imgs || [])) {
-      if (row.storage_path) { try { await _db().storage.from(PRODUCT_IMAGE_BUCKET).remove([row.storage_path]); } catch (e) {} }
-    }
-    if (imgs && imgs.length) await _db().from('product_images').delete().eq('product_id', productId);
-  } catch (e) { console.warn('[Supabase] cleanup of product_images before delete failed', e); }
-  const { error } = await _db().from('products').delete().eq('id', productId);
-  return { error };
+    const response = await fetch(
+      '/api/admin/products/' + encodeURIComponent(String(productId)) + '/images',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': file.type,
+        },
+        body: file,
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload.image, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
+
+async function sbDeleteProductImage(imageId) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+
+  try {
+    const response = await fetch(
+      '/api/admin/product-images/' + encodeURIComponent(String(imageId)),
+      {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer ' + token },
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
+
+async function sbReorderProductImages(productId, imageIds) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+
+  try {
+    const response = await fetch(
+      '/api/admin/products/' + encodeURIComponent(String(productId)) + '/images/order',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ image_ids: imageIds }),
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload.images, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
+
+async function sbDeleteProduct(productId) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+
+  try {
+    const response = await fetch(
+      '/api/admin/products/' + encodeURIComponent(String(productId)),
+      {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer ' + token },
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
 }
 
 // ─── ADMIN CRUD ───
 async function sbSaveProduct(product, isEdit) {
-  if (!window.sbClient) {
-    return { data: null, error: new Error('Supabase not initialised') };
+  const token = sessionStorage.getItem('tick_api_token');
+
+  if (!token) {
+    return {
+      data: null,
+      error: new Error('Admin session is missing'),
+    };
   }
 
-  if (isEdit) {
-    return await _db()
-      .from('products')
-      .update(product)
-      .eq('id', product.id)
-      .select()
-      .single();
-  }
+  try {
+    const productId =
+      product && product.id ? String(product.id) : '';
 
-  return await _db()
-    .from('products')
-    .insert([product])
-    .select()
-    .single();
+    const url = isEdit
+      ? '/api/admin/products/' + encodeURIComponent(productId)
+      : '/api/admin/products';
+
+    const payload = { ...product };
+    delete payload.id;
+
+    const response = await fetch(url, {
+      method: isEdit ? 'PATCH' : 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await apiJson(response);
+
+    if (!response.ok) {
+      throw new Error(result.error || 'Product save failed');
+    }
+
+    return {
+      data: result.product,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      data: null,
+      error,
+    };
+  }
 }
-
 async function sbUpdateOrderStatus(orderId, status) {
   const token = sessionStorage.getItem('tick_api_token');
   if (!token) return { data: null, error: new Error('Admin session is missing') };
@@ -283,8 +384,7 @@ async function sbUpdateOrderStatus(orderId, status) {
       },
       body: JSON.stringify({ status })
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || 'Order status update failed');
+    const payload = await apiJson(response);
     return { data: payload.order, error: null };
   } catch (error) {
     return { data: null, error };
@@ -312,16 +412,146 @@ async function sbRestockProduct(productId, quantity) {
   }
 }
 
-async function sbSaveEpisode(ep, isEdit) {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  if (isEdit) {
-    return await _db().from('episodes').update(ep).eq('id', ep.id);
-  } else {
-    return await _db().from('episodes').insert([ep]);
+async function sbAdminInstapayAction(orderId, action, body) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+
+  try {
+    const response = await fetch(
+      '/api/admin/orders/' + encodeURIComponent(orderId) + '/instapay/' + action,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body || {})
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload.order, error: null };
+  } catch (error) {
+    return { data: error.order || null, error };
   }
 }
 
+async function sbConfirmInstapayPayment(orderId) {
+  return sbAdminInstapayAction(orderId, 'confirm', {});
+}
+
+async function sbRejectInstapayPayment(orderId, reason) {
+  return sbAdminInstapayAction(orderId, 'reject', { reason });
+}
+
+async function sbGetInstapayProofUrl(orderId) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { url: null, error: new Error('Admin session is missing') };
+
+  try {
+    const response = await fetch(
+      '/api/admin/orders/' + encodeURIComponent(orderId) + '/instapay/proof',
+      {
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + token },
+        cache: 'no-store'
+      }
+    );
+    const payload = await apiJson(response);
+    return { url: payload.url, error: null };
+  } catch (error) {
+    return { url: null, error };
+  }
+}
+
+async function sbSaveEpisode(ep, isEdit) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+  try {
+    const id = ep && ep.id ? String(ep.id) : '';
+    const body = { ...ep };
+    delete body.id;
+    const response = await fetch(
+      isEdit ? '/api/admin/episodes/' + encodeURIComponent(id) : '/api/admin/episodes',
+      {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }
+    );
+    const payload = await apiJson(response);
+    return { data: payload.episode, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
+
+async function sbDeleteEpisode(id) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+  try {
+    const response = await fetch('/api/admin/episodes/' + encodeURIComponent(String(id)), {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + token },
+    });
+    const payload = await apiJson(response);
+    return { data: payload, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
+
+async function sbSaveSettings(settings) {
+  const token = sessionStorage.getItem('tick_api_token');
+  if (!token) return { data: null, error: new Error('Admin session is missing') };
+  try {
+    const response = await fetch('/api/admin/settings', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings }),
+    });
+    const payload = await apiJson(response);
+    return { data: payload.settings || [], error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
 async function sbSaveSetting(key, value) {
-  if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };
-  return await _db().from('settings').upsert({ key, value, updated_at: new Date().toISOString() });
+  const token = sessionStorage.getItem('tick_api_token');
+
+  if (!token) {
+    return {
+      data: null,
+      error: new Error('Admin session is missing'),
+    };
+  }
+
+  try {
+    const response = await fetch(
+      '/api/admin/settings/' + encodeURIComponent(String(key)),
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ value }),
+      }
+    );
+
+    const payload = await apiJson(response);
+
+    if (!response.ok) {
+      throw new Error(payload.error || 'Setting save failed');
+    }
+
+    return {
+      data: Array.isArray(payload.settings) ? payload.settings[0] : null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      data: null,
+      error,
+    };
+  }
 }

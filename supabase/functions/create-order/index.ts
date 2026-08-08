@@ -1,653 +1,324 @@
-import { serve } from "https://deno.land/std/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2.109.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-};
+const MAX_BODY_BYTES = 32 * 1024;
+const MAX_LINE_ITEMS = 20;
+const MAX_ITEM_QUANTITY = 10;
+const MAX_TOTAL_QUANTITY = 30;
+const MAX_ORDER_TOTAL = 1_000_000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CHECKOUT_TOKEN_PATTERN = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{64})$/i;
+const HASH_PATTERN = /^[0-9a-f]{64}$/;
+const PUBLIC_ORDER_RESPONSE_FIELDS = [
+  "id",
+  "total_amount",
+  "payment_method",
+  "payment_status",
+  "payment_expires_at",
+  "status",
+  "created_at",
+  "idempotent_replay",
+] as const;
+const allowedOrigins = new Set(
+  String(Deno.env.get("TICK_STOREFRONT_ORIGINS") || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => new URL(value).origin),
+);
+const allowLocalhost = Deno.env.get("TICK_ALLOW_LOCALHOST_ORIGINS") === "true";
 
-function escapeHtml(value: unknown): string {
-  const entities: Record<string, string> = {
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  };
+type JsonRecord = Record<string, unknown>;
 
-  return String(value ?? "").replace(
-    /[&<>"']/g,
-    (character) => entities[character]
-  );
+function isRecord(value: unknown): value is JsonRecord {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function base64UrlEncode(value: string | Uint8Array): string {
-  const bytes =
-    typeof value === "string"
-      ? new TextEncoder().encode(value)
-      : value;
-
-  let binary = "";
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+function hasOnlyKeys(value: JsonRecord, keys: Set<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
 }
 
-function privateKeyToPkcs8(privateKey: string): ArrayBuffer {
-  const normalizedKey = privateKey.replace(/\\n/g, "\n");
+function publicOrderResponse(value: unknown): JsonRecord | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id : "";
+  const totalAmount = typeof value.total_amount === "number"
+    ? value.total_amount
+    : Number(value.total_amount);
+  if (!UUID_PATTERN.test(id) || !Number.isFinite(totalAmount) || totalAmount < 0) return null;
 
-  const base64Key = normalizedKey
-    .replace(/-----BEGIN PRIVATE KEY-----/g, "")
-    .replace(/-----END PRIVATE KEY-----/g, "")
-    .replace(/\s/g, "");
-
-  const binaryKey = atob(base64Key);
-  const bytes = new Uint8Array(binaryKey.length);
-
-  for (let i = 0; i < binaryKey.length; i += 1) {
-    bytes[i] = binaryKey.charCodeAt(i);
-  }
-
-  return bytes.buffer;
-}
-
-async function getFirebaseAccessToken(): Promise<{
-  accessToken: string;
-  projectId: string;
-}> {
-  const projectId = Deno.env.get("FIREBASE_PROJECT_ID");
-  const clientEmail = Deno.env.get("FIREBASE_CLIENT_EMAIL");
-  const privateKey = Deno.env.get("FIREBASE_PRIVATE_KEY");
-
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error("Firebase service account secrets are missing");
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-
-  const jwtHeader = {
-    alg: "RS256",
-    typ: "JWT",
-  };
-
-  const jwtPayload = {
-    iss: clientEmail,
-    scope: "https://www.googleapis.com/auth/firebase.messaging",
-    aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600,
-  };
-
-  const unsignedJwt =
-    base64UrlEncode(JSON.stringify(jwtHeader)) +
-    "." +
-    base64UrlEncode(JSON.stringify(jwtPayload));
-
-  const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    privateKeyToPkcs8(privateKey),
-    {
-      name: "RSASSA-PKCS1-v1_5",
-      hash: "SHA-256",
-    },
-    false,
-    ["sign"]
-  );
-
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    cryptoKey,
-    new TextEncoder().encode(unsignedJwt)
-  );
-
-  const signedJwt =
-    unsignedJwt +
-    "." +
-    base64UrlEncode(new Uint8Array(signature));
-
-  const tokenResponse = await fetch(
-    "https://oauth2.googleapis.com/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type:
-          "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: signedJwt,
-      }),
-    }
-  );
-
-  const tokenResponseText = await tokenResponse.text();
-
-  let tokenResponseData: any = {};
-
-  try {
-    tokenResponseData = JSON.parse(tokenResponseText);
-  } catch {
-    tokenResponseData = {};
-  }
-
-  if (!tokenResponse.ok || !tokenResponseData.access_token) {
-    throw new Error(
-      `Firebase OAuth failed (${tokenResponse.status})`
-    );
-  }
-
-  return {
-    accessToken: tokenResponseData.access_token,
-    projectId,
-  };
-}
-
-function getFcmErrorCode(responseData: any): string {
-  const details = Array.isArray(responseData?.error?.details)
-    ? responseData.error.details
-    : [];
-
-  const fcmError = details.find(
-    (detail: any) =>
-      typeof detail?.errorCode === "string"
-  );
-
-  return (
-    fcmError?.errorCode ||
-    responseData?.error?.status ||
-    ""
-  );
-}
-
-async function sendAdminPushNotifications(
-  supabase: any,
-  order: any
-) {
-  const { data: pushTokens, error: pushTokensError } =
-    await supabase
-      .from("push_tokens")
-      .select("id, token");
-
-  if (pushTokensError) {
-    throw new Error(
-      `Could not read push tokens: ${pushTokensError.message}`
-    );
-  }
-
-  if (!pushTokens || pushTokens.length === 0) {
-    console.log("FCM: no registered admin devices");
-    return;
-  }
-
-  const { accessToken, projectId } =
-    await getFirebaseAccessToken();
-
-  const title = "🛒 New TICK Order";
-
-  const body =
-    `Order #${order.id} • ` +
-    `${order.total_amount} EGP • ` +
-    `${order.customer_name}`;
-
-  const results = await Promise.allSettled(
-  pushTokens.map(async (pushToken: any) => {
-    const response = await fetch(
-      `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(
-        projectId
-      )}/messages:send`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: {
-            token: pushToken.token,
-
-            notification: {
-              title,
-              body,
-            },
-
-            data: {
-              title,
-              body,
-              url: "/admin",
-              orderId: String(order.id),
-              totalAmount: String(order.total_amount ?? ""),
-              customerName: String(order.customer_name ?? ""),
-            },
-
-            webpush: {
-              headers: {
-                Urgency: "high",
-              },
-
-              notification: {
-                title,
-                body,
-                tag: `tick-order-${order.id}`,
-                renotify: true,
-                requireInteraction: true,
-              },
-            },
-          },
-        }),
-      }
-    );
-
-    const responseText = await response.text();
-
-      let responseData: any = {};
-
-      try {
-        responseData = JSON.parse(responseText);
-      } catch {
-        responseData = {};
-      }
-
-      if (!response.ok) {
-        const errorCode = getFcmErrorCode(responseData);
-
-        if (
-          errorCode === "UNREGISTERED" ||
-          errorCode === "NOT_FOUND"
-        ) {
-          const { error: deleteError } = await supabase
-            .from("push_tokens")
-            .delete()
-            .eq("id", pushToken.id);
-
-          if (deleteError) {
-            console.error(
-              "Could not remove expired FCM token:",
-              deleteError.message
-            );
-          }
-
-          console.warn(
-            "FCM: removed expired admin device token"
-          );
-
-          return {
-            sent: false,
-            removed: true,
-          };
-        }
-
-        throw new Error(
-          `FCM send failed (${response.status}): ${errorCode || "unknown_error"}`
-        );
-      }
-
-      return {
-        sent: true,
-        removed: false,
-      };
-    })
-  );
-
-  let sent = 0;
-  let removed = 0;
-  let failed = 0;
-
-  for (const result of results) {
-    if (result.status === "fulfilled") {
-      if (result.value.sent) sent += 1;
-      if (result.value.removed) removed += 1;
+  const projected: JsonRecord = {};
+  for (const field of PUBLIC_ORDER_RESPONSE_FIELDS) {
+    if (field === "total_amount") projected[field] = totalAmount;
+    else if (field === "idempotent_replay") projected[field] = value[field] === true;
+    else if (field === "payment_expires_at") {
+      projected[field] = typeof value[field] === "string" ? value[field] : null;
     } else {
-      failed += 1;
-      console.error(
-        "FCM device send failed:",
-        result.reason
-      );
+      projected[field] = typeof value[field] === "string" ? value[field] : null;
     }
   }
-
-  console.log(
-    `FCM RESULT: sent=${sent}, removed=${removed}, failed=${failed}`
-  );
+  return projected;
 }
 
-async function sendOrderEmail(order: any, items: any[]) {
-  const resendApiKey = Deno.env.get("RESEND_API_KEY");
-  const adminEmail = Deno.env.get("ADMIN_EMAIL");
-
-  if (!resendApiKey || !adminEmail) {
-    console.warn(
-      "RESEND_API_KEY or ADMIN_EMAIL is missing"
-    );
-    return;
-  }
-
-  const itemsHtml = items
-    .map(
-      (item: any) => `
-        <li>
-          Product ID: ${escapeHtml(item.pid)}<br>
-          Qty: ${escapeHtml(item.qty)}<br>
-          Price: ${escapeHtml(item.price)} EGP
-        </li>
-      `
-    )
-    .join("");
-
-  const html = `
-    <h2>🛒 New TICK Order</h2>
-
-    <p><strong>Customer:</strong> ${escapeHtml(order.customer_name)}</p>
-    <p><strong>Phone:</strong> ${escapeHtml(order.customer_phone)}</p>
-    <p><strong>Email:</strong> ${escapeHtml(order.customer_email || "-")}</p>
-    <p><strong>Payment:</strong> ${escapeHtml(order.payment_method)}</p>
-    <p><strong>Total:</strong> ${escapeHtml(order.total_amount)} EGP</p>
-
-    <hr>
-
-    <h3>Items</h3>
-
-    <ul>
-      ${itemsHtml}
-    </ul>
-
-    <hr>
-
-    <pre>${escapeHtml(
-      JSON.stringify(order.shipping_address, null, 2)
-    )}</pre>
-  `;
-
-  const response = await fetch(
-    "https://api.resend.com/emails",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${resendApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: "TICK <onboarding@resend.dev>",
-        to: adminEmail,
-        subject: `🛒 New Order #${order.id}`,
-        html,
-      }),
-    }
-  );
-
-  await response.text();
-
-  console.log("RESEND STATUS:", response.status);
-
-  if (!response.ok) {
-    throw new Error(
-      `Resend failed (${response.status})`
-    );
-  }
+function normalizedText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.normalize("NFKC").trim();
+  if (normalized.length > maxLength || /[\u0000-\u001f\u007f]/.test(normalized)) return null;
+  return normalized;
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", {
-      headers: corsHeaders,
-    });
-  }
+function normalizedPhone(value: unknown): { display: string; digits: string } | null {
+  const display = normalizedText(value, 24);
+  if (!display || !/^\+?[0-9 ()-]+$/.test(display)) return null;
+  const digits = display.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 15) return null;
+  return { display, digits };
+}
 
+function isAllowedOrigin(origin: string | null): boolean {
+  if (!origin) return true;
+  let parsed: URL;
   try {
-    const requestBody = await req.json().catch(() => null);
-
-const orderData = requestBody?.orderData;
-const items = Array.isArray(requestBody?.items)
-  ? requestBody.items
-  : [];
-
-if (
-  !orderData ||
-  typeof orderData !== "object" ||
-  !orderData.customer ||
-  typeof orderData.customer !== "object" ||
-  typeof orderData.checkoutToken !== "string" ||
-  orderData.checkoutToken.trim() === "" ||
-  orderData.checkoutToken.length > 128
-) {
-  return new Response(
-    JSON.stringify({
-      ok: false,
-      error: "invalid_request_body",
-      message:
-        "Request must contain orderData, orderData.customer, and items.",
-    }),
-    {
-      status: 400,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (allowedOrigins.has(parsed.origin)) return true;
+  return allowLocalhost && parsed.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
 }
 
-if (
-  orderData.total === undefined ||
-  orderData.total === null ||
-  !Number.isFinite(Number(orderData.total))
-) {
-  return new Response(
-    JSON.stringify({
-      ok: false,
-      error: "invalid_order_total",
-    }),
-    {
-      status: 400,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-}
-if (items.length === 0) {
-  return new Response(
-    JSON.stringify({
-      ok: false,
-      error: "empty_order_items",
-      message: "An order must contain at least one item.",
-    }),
-    {
-      status: 400,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+function responseHeaders(origin: string | null): HeadersInit {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "Vary": "Origin",
+  };
+  if (origin && isAllowedOrigin(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Headers"] = "apikey, authorization, content-type, x-client-info";
+    headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+    headers["Access-Control-Max-Age"] = "600";
+  }
+  return headers;
 }
 
-const invalidItem = items.find((item: any) => {
-  const quantity = Number(item?.qty);
-  const price = Number(item?.price);
-
-  return (
-    !item ||
-    typeof item !== "object" ||
-    typeof item.pid !== "string" ||
-    item.pid.trim() === "" ||
-    !Number.isInteger(quantity) ||
-    quantity < 1 ||
-    !Number.isFinite(price) ||
-    price < 0
-  );
-});
-
-if (invalidItem) {
-  return new Response(
-    JSON.stringify({
-      ok: false,
-      error: "invalid_order_item",
-      message:
-        "Every item must have a valid product ID, quantity, and price.",
-    }),
-    {
-      status: 400,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-}
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-
-    const { data: order, error: orderError } =
-  await supabase.rpc(
-    "create_order_with_stock",
-    {
-      p_order: orderData,
-      p_items: items,
-    }
-  );
-
-if (orderError) {
-  console.error(
-    "create_order_with_stock failed:",
-    orderError.message
-  );
-
-  const knownClientErrors = [
-    "empty_order_items",
-    "invalid_order_item",
-    "invalid_item_quantity",
-    "invalid_order_total",
-    "invalid_order_data",
-    "invalid_customer_data",
-    "product_not_found",
-    "insufficient_stock",
-    "order_total_changed",
-  ];
-
-  const errorCode =
-    knownClientErrors.includes(orderError.message)
-      ? orderError.message
-      : "order_creation_failed";
-
-  const status =
-    errorCode === "insufficient_stock" || errorCode === "order_total_changed"
-      ? 409
-      : errorCode === "product_not_found"
-        ? 404
-        : errorCode === "order_creation_failed"
-          ? 500
-          : 400;
-
-  return new Response(
-    JSON.stringify({
-      ok: false,
-      error: errorCode,
-      message:
-        errorCode === "insufficient_stock"
-          ? "One or more products do not have enough stock."
-          : errorCode === "order_total_changed"
-            ? "A product price changed. Please refresh your cart and try again."
-          : errorCode === "product_not_found"
-            ? "One or more products are no longer available."
-            : errorCode === "order_creation_failed"
-              ? "The order could not be created."
-              : "The order data is invalid.",
-    }),
-    {
-      status,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+function jsonResponse(origin: string | null, status: number, body: JsonRecord, extraHeaders: HeadersInit = {}): Response {
+  const headers = new Headers(responseHeaders(origin));
+  new Headers(extraHeaders).forEach((value, key) => headers.set(key, value));
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
-if (!order?.id) {
-  return new Response(
-    JSON.stringify({
-      ok: false,
-      error: "order_creation_failed",
-      message: "No order ID was returned.",
-    }),
-    {
-      status: 500,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+function sourceIp(req: Request): string {
+  if (Deno.env.get("TICK_TRUST_EDGE_FORWARDED_IP") !== "true") return "unavailable";
+  const candidate = req.headers.get("cf-connecting-ip") ||
+    req.headers.get("x-real-ip") ||
+    String(req.headers.get("x-forwarded-for") || "").split(",", 1)[0].trim();
+  return candidate && /^[0-9a-f:.]{3,64}$/i.test(candidate) ? candidate.toLowerCase() : "unavailable";
 }
-    /*
-      إرسال الإيميل والـ Push بالتوازي.
 
-      لو واحدة منهم فشلت، الأوردر يظل ناجحًا
-      لأنه بالفعل اتحفظ في قاعدة البيانات.
-    */
-    const notificationResults =
-      await Promise.allSettled([
-        sendOrderEmail(order, items || []),
-        sendAdminPushNotifications(
-          supabase,
-          order
-        ),
-      ]);
+async function fingerprint(secret: string, scope: string, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = new Uint8Array(await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${scope}:${value}`),
+  ));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
-    if (
-      notificationResults[0].status === "rejected"
-    ) {
-      console.error(
-        "Order email failed:",
-        notificationResults[0].reason
+function validateRequestBody(body: unknown):
+  | { error: string }
+  | { orderData: JsonRecord; items: JsonRecord[]; phoneDigits: string; checkoutToken: string; payment: "COD" | "InstaPay" } {
+  if (!isRecord(body) || !hasOnlyKeys(body, new Set(["orderData", "items"]))) return { error: "invalid_request_body" };
+  if (!isRecord(body.orderData) || !Array.isArray(body.items)) return { error: "invalid_request_body" };
+  const order = body.orderData;
+  if (!hasOnlyKeys(order, new Set(["total", "customer", "payment", "notes", "checkoutToken"]))) {
+    return { error: "invalid_order_data" };
+  }
+  if (typeof order.total !== "number" || !Number.isFinite(order.total) || order.total < 0 || order.total > MAX_ORDER_TOTAL) {
+    return { error: "invalid_order_total" };
+  }
+  const checkoutToken = normalizedText(order.checkoutToken, 128);
+  if (!checkoutToken || !CHECKOUT_TOKEN_PATTERN.test(checkoutToken)) return { error: "invalid_checkout_token" };
+  const paymentValue = normalizedText(order.payment, 20)?.toLowerCase();
+  const payment = paymentValue === "cod" ? "COD" : paymentValue === "instapay" ? "InstaPay" : null;
+  if (!payment) return { error: "invalid_payment_method" };
+  if (!isRecord(order.customer) || !hasOnlyKeys(order.customer, new Set(["fn", "ln", "ph", "email", "area", "city", "addr", "notes"]))) {
+    return { error: "invalid_customer_data" };
+  }
+  const customer = order.customer;
+  const fn = normalizedText(customer.fn, 60);
+  const ln = normalizedText(customer.ln ?? "", 60);
+  const phone = normalizedPhone(customer.ph);
+  const email = normalizedText(customer.email ?? "", 254);
+  const area = normalizedText(customer.area, 80);
+  const city = normalizedText(customer.city ?? "", 80);
+  const addr = normalizedText(customer.addr, 300);
+  const customerNotes = normalizedText(customer.notes ?? "", 500);
+  const notes = normalizedText(order.notes ?? "", 500);
+  if (!fn || !phone || !area || !addr || ln === null || city === null || customerNotes === null || notes === null || email === null) {
+    return { error: "invalid_customer_data" };
+  }
+  if (email && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) return { error: "invalid_customer_email" };
+  if (body.items.length < 1) return { error: "empty_order_items" };
+  if (body.items.length > MAX_LINE_ITEMS) return { error: "too_many_order_items" };
+  let totalQuantity = 0;
+  const items: JsonRecord[] = [];
+  for (const item of body.items) {
+    if (!isRecord(item) || !hasOnlyKeys(item, new Set(["pid", "qty", "isSt", "strapConfig"]))) {
+      return { error: "invalid_order_item" };
+    }
+    if (typeof item.pid !== "string" || !UUID_PATTERN.test(item.pid)) return { error: "invalid_order_item" };
+    const quantity = item.qty;
+    if (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity < 1 || quantity > MAX_ITEM_QUANTITY) {
+      return { error: "invalid_item_quantity" };
+    }
+    if (item.isSt !== undefined && typeof item.isSt !== "boolean") return { error: "invalid_order_item" };
+    let strapConfig: JsonRecord | null = null;
+    if (item.strapConfig !== undefined && item.strapConfig !== null) {
+      if (!isRecord(item.strapConfig) || !hasOnlyKeys(item.strapConfig, new Set(["color", "colorHex", "width"]))) {
+        return { error: "invalid_strap_configuration" };
+      }
+      const color = normalizedText(item.strapConfig.color ?? "", 80);
+      const colorHex = normalizedText(item.strapConfig.colorHex ?? "", 20);
+      const width = normalizedText(item.strapConfig.width ?? "", 30);
+      if (color === null || colorHex === null || width === null) return { error: "invalid_strap_configuration" };
+      strapConfig = { color, colorHex, width };
+    }
+    totalQuantity += quantity;
+    if (totalQuantity > MAX_TOTAL_QUANTITY) return { error: "order_quantity_limit" };
+    items.push({ pid: item.pid.toLowerCase(), qty: quantity, isSt: item.isSt === true, strapConfig });
+  }
+  return {
+    orderData: {
+      total: order.total,
+      payment,
+      notes,
+      checkoutToken,
+      customer: { fn, ln, ph: phone.display, email, area, city, addr, notes: customerNotes },
+    },
+    items,
+    phoneDigits: phone.digits,
+    checkoutToken,
+    payment,
+  };
+}
+
+function safeRpcError(error: { message?: string } | null): { status: number; code: string } {
+  const message = String(error?.message || "");
+  const clientErrors = new Set([
+    "empty_order_items", "invalid_order_item", "invalid_item_quantity", "invalid_order_total",
+    "invalid_payment_method", "invalid_order_data", "invalid_customer_data", "product_not_found",
+    "insufficient_stock", "order_total_changed", "payment_method_disabled", "cod_active_order_limit",
+  ]);
+  const code = clientErrors.has(message) ? message : "order_creation_failed";
+  if (code === "insufficient_stock" || code === "order_total_changed" || code === "payment_method_disabled") return { status: 409, code };
+  if (code === "product_not_found") return { status: 404, code };
+  if (code === "cod_active_order_limit") return { status: 429, code };
+  if (code === "order_creation_failed") return { status: 500, code };
+  return { status: 400, code };
+}
+
+Deno.serve(async (req: Request) => {
+  const origin = req.headers.get("origin");
+  if (!isAllowedOrigin(origin)) return jsonResponse(origin, 403, { ok: false, error: "origin_not_allowed" });
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: responseHeaders(origin) });
+  if (req.method !== "POST") return jsonResponse(origin, 405, { ok: false, error: "method_not_allowed" }, { Allow: "POST, OPTIONS" });
+  const contentLength = Number(req.headers.get("content-length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return jsonResponse(origin, 413, { ok: false, error: "request_body_too_large" });
+  }
+  let rawBody: string;
+  try {
+    rawBody = await req.text();
+  } catch {
+    return jsonResponse(origin, 400, { ok: false, error: "invalid_request_body" });
+  }
+  if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
+    return jsonResponse(origin, 413, { ok: false, error: "request_body_too_large" });
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return jsonResponse(origin, 400, { ok: false, error: "invalid_json" });
+  }
+  const validated = validateRequestBody(body);
+  if ("error" in validated) return jsonResponse(origin, 400, { ok: false, error: validated.error });
+  if (validated.payment === "InstaPay" && Deno.env.get("TICK_INSTAPAY_ENABLED") !== "true") {
+    return jsonResponse(origin, 409, { ok: false, error: "payment_method_disabled" });
+  }
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  const abuseSecret = Deno.env.get("TICK_ORDER_ABUSE_SECRET") || "";
+  if (!supabaseUrl || !serviceRoleKey || abuseSecret.length < 32) {
+    console.error(JSON.stringify({ level: "error", event: "order_service_misconfigured", code: "ORDER_CFG_001" }));
+    return jsonResponse(origin, 503, { ok: false, error: "order_service_unavailable" });
+  }
+  try {
+    const [ipHash, phoneHash, checkoutHash] = await Promise.all([
+      fingerprint(abuseSecret, "ip", sourceIp(req)),
+      fingerprint(abuseSecret, "phone", validated.phoneDigits),
+      fingerprint(abuseSecret, "checkout", validated.checkoutToken),
+    ]);
+    if (![ipHash, phoneHash, checkoutHash].every((value) => HASH_PATTERN.test(value))) {
+      throw new Error("fingerprint_failed");
+    }
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data: abuse, error: abuseError } = await supabase.rpc("consume_order_abuse_limits", {
+      p_ip_hash: ipHash,
+      p_phone_hash: phoneHash,
+      p_checkout_hash: checkoutHash,
+    });
+    if (abuseError) {
+      console.error(JSON.stringify({ level: "error", event: "order_abuse_gate_failed", code: "ORDER_ABUSE_002" }));
+      return jsonResponse(origin, 503, { ok: false, error: "order_service_unavailable" });
+    }
+    if (!abuse?.allowed) {
+      const retryAfter = Math.max(1, Math.min(1800, Number(abuse?.retry_after_seconds) || 60));
+      console.warn(JSON.stringify({
+        level: "warning",
+        event: "order_abuse_denied",
+        code: "ORDER_ABUSE_429",
+        scope: String(abuse?.scope || "combined"),
+        fingerprint_prefix: ipHash.slice(0, 12),
+      }));
+      return jsonResponse(
+        origin,
+        429,
+        { ok: false, error: "order_rate_limited", retry_after_seconds: retryAfter },
+        { "Retry-After": String(retryAfter) },
       );
     }
-
-    if (
-      notificationResults[1].status === "rejected"
-    ) {
-      console.error(
-        "Order push failed:",
-        notificationResults[1].reason
-      );
+    const { data: order, error: orderError } = await supabase.rpc("create_preview_order_with_stock", {
+      p_order: validated.orderData,
+      p_items: validated.items,
+      p_phone_hash: phoneHash,
+    });
+    if (orderError) {
+      const mapped = safeRpcError(orderError);
+      if (mapped.status >= 500) {
+        console.error(JSON.stringify({ level: "error", event: "order_creation_failed", code: "ORDER_CREATE_500" }));
+      }
+      const headers = mapped.status === 429 ? { "Retry-After": "1800" } : {};
+      return jsonResponse(origin, mapped.status, { ok: false, error: mapped.code }, headers);
     }
-
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        order,
-        items: items.length,
-      }),
-      {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-  } catch (error) {
-    return new Response(
-      JSON.stringify({
-        ok: false,
-        error: String(error),
-      }),
-      {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const publicOrder = publicOrderResponse(order);
+    if (!publicOrder) {
+      console.error(JSON.stringify({ level: "error", event: "order_creation_missing_result", code: "ORDER_CREATE_501" }));
+      return jsonResponse(origin, 500, { ok: false, error: "order_creation_failed" });
+    }
+    return jsonResponse(origin, 200, { ok: true, order: publicOrder });
+  } catch {
+    console.error(JSON.stringify({ level: "error", event: "order_request_failed", code: "ORDER_CREATE_502" }));
+    return jsonResponse(origin, 500, { ok: false, error: "order_creation_failed" });
   }
 });

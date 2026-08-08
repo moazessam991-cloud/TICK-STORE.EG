@@ -107,8 +107,8 @@ assert(!html.includes('if(d.orders)S.orders=d.orders'), 'backup import must not 
 assert(!html.includes('S.orders=[]'), 'reset must not clear visible orders');
 assert(html.includes("else if(p.startsWith('/admin')){if(getSession())__tickRenderAdminFromApi()"), 'admin reload must refresh canonical orders');
 assert(!server.match(/\.from\(['"]orders['"]\)[\s\S]{0,120}\.delete\(/), 'server must not delete orders');
-assert(server.includes(".update({ status })"), 'status changes must be in-place updates');
-assert(edge.includes('create_order_with_stock'), 'Edge Function must use the atomic RPC');
+assert(server.includes("sbAdmin.rpc('update_order_fulfillment_status'"), 'status changes must use the locked database transition');
+assert(edge.includes('create_preview_order_with_stock'), 'Edge Function must use the preview wrapper around the atomic stock RPC');
 assert(!edge.match(/\.from\(["']orders["']\)[\s\S]{0,120}\.insert\(/), 'Edge Function must not insert orders outside the RPC');
 assert(migration.includes('pg_advisory_xact_lock'), 'RPC must serialize idempotent retries');
 assert(migration.includes('product.sale_price < product.price'), 'RPC must validate sale prices');

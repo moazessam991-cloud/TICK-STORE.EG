@@ -1,22 +1,11 @@
-
-[functions.send-order-notification]
-enabled = true
-verify_jwt = false
-import_map = "./functions/send-order-notification/deno.json"
-# Uncomment to specify a custom file path to the entrypoint.
-# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
-entrypoint = "./functions/send-order-notification/index.ts"
-# Specifies static files to be bundled with the function. Supports glob patterns.
-# For example, if you want to serve static HTML pages in your function:
-# static_files = [ "./functions/send-order-notification/*.html" ]
-
+# Public customer checkout remains intentionally unauthenticated, with strict
+# origin/schema limits and a durable service-only abuse gate in the function.
 [functions.create-order]
 enabled = true
 verify_jwt = false
 import_map = "./functions/create-order/deno.json"
-# Uncomment to specify a custom file path to the entrypoint.
-# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
 entrypoint = "./functions/create-order/index.ts"
-# Specifies static files to be bundled with the function. Supports glob patterns.
-# For example, if you want to serve static HTML pages in your function:
-# static_files = [ "./functions/create-order/*.html" ]
+
+# send-order-notification is intentionally absent: it is not deployable from
+# this project configuration. Its source returns 410 as a second fail-closed
+# control if somebody deploys that directory manually.

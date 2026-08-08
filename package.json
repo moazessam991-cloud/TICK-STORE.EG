@@ -5,20 +5,28 @@
   "description": "Backend API for TICK. watch storefront (tick-website-v26)",
   "main": "server/index.js",
   "scripts": {
-    "start": "node --env-file=.env server/index.js",
+    "start": "node server/index.js",
+    "start:local": "node --env-file=.env server/index.js",
     "stage1": "node scripts/stage1-test.js",
     "stage2": "node scripts/stage2-test.js",
-    "stage3": "node scripts/stage3-test.js",
-    "stage4": "node scripts/stage4-test.js",
-    "stage5": "node scripts/stage5-test.js",
-    "stage6": "node scripts/stage6-test.js",
-    "stage7": "node scripts/stage7-twilio-normalize.js",
+    "test:syntax": "node scripts/static-syntax-test.js",
+    "test:twilio-normalize": "node scripts/stage7-twilio-normalize.js",
     "test:audit": "node scripts/audit-business-logic-test.js",
-    "test:all": "npm run stage1 && npm run stage2 && npm run stage3 && npm run stage4 && npm run stage5 && npm run stage6 && npm run stage7",
+    "test:instapay": "node scripts/instapay-flow-test.js",
+    "test:order-status": "node scripts/order-status-cancellation-test.js",
+    "test:migrations": "node scripts/migration-chain-test.js",
+    "test:product-images": "node scripts/product-image-admin-test.js",
+    "test:phase1-verifier": "node scripts/phase1-verifier-test.js",
+    "test:email-relay": "node scripts/email-relay-security-test.js",
+    "test:order-abuse": "node scripts/order-abuse-security-test.js",
+    "test:admin-content": "node scripts/admin-content-settings-test.js",
+    "test:preview-server": "node scripts/preview-server-security-test.js",
+    "test:preview": "npm run test:syntax && npm run test:migrations && npm run test:audit && npm run test:instapay && npm run test:order-status && npm run test:product-images && npm run test:phase1-verifier && npm run test:email-relay && npm run test:order-abuse && npm run test:admin-content && npm run test:preview-server && npm run test:twilio-normalize",
+    "test:all": "npm run test:preview",
     "seed:extract": "node scripts/extract-seed-from-html.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",

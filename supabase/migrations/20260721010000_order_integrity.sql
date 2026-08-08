@@ -1,3 +1,249 @@
+-- Fresh-install active schema baseline.
+--
+-- This block is intentionally part of the already-versioned first migration:
+-- new projects need these relations before the order-integrity ALTERs and
+-- functions below are compiled. Projects that already recorded version
+-- 20260721010000 do not rerun it; their non-destructive upgrade path starts
+-- with the forward-only 20260801 migrations.
+
+create extension if not exists pgcrypto;
+
+create table public.categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  slug text not null,
+  description text,
+  image_url text,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint categories_slug_key unique (slug),
+  constraint categories_slug_not_blank check (btrim(slug) <> '')
+);
+
+create table public.products (
+  id uuid primary key default gen_random_uuid(),
+  category_id uuid references public.categories(id),
+  brand text not null,
+  name text not null,
+  price numeric not null,
+  sale_price numeric,
+  emoji text,
+  bg_color text,
+  tags text[] not null default '{}'::text[],
+  size text,
+  movement text,
+  case_size text,
+  crystal text,
+  water_resistance text,
+  strap_type text,
+  power_reserve text,
+  stock_quantity integer not null default 0,
+  description_en text,
+  description_ar text,
+  video_url text,
+  model_3d_url text,
+  is_active boolean not null default true,
+  variants jsonb not null default '[]'::jsonb,
+  era text,
+  condition_rating smallint,
+  orig_price_reference numeric,
+  authentication_notes text,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  updated_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint products_price_nonnegative check (price >= 0),
+  constraint products_sale_price_valid check (
+    sale_price is null or (sale_price >= 0 and sale_price < price)
+  ),
+  constraint products_stock_nonnegative check (stock_quantity >= 0),
+  constraint products_condition_rating_range check (
+    condition_rating is null or condition_rating between 1 and 5
+  ),
+  constraint products_original_price_nonnegative check (
+    orig_price_reference is null or orig_price_reference >= 0
+  ),
+  constraint products_variants_shape check (
+    jsonb_typeof(variants) in ('array', 'object')
+  )
+);
+
+create table public.product_images (
+  id uuid primary key default gen_random_uuid(),
+  product_id uuid not null references public.products(id) on delete cascade,
+  url text not null,
+  position integer not null default 0,
+  storage_path text,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint product_images_position_nonnegative check (position >= 0)
+);
+
+create table public.orders (
+  id uuid primary key default gen_random_uuid(),
+  status text not null default 'pending',
+  total_amount numeric not null,
+  payment_method text,
+  payment_status text not null default 'unpaid',
+  payment_id text,
+  customer_name text,
+  customer_phone text,
+  customer_email text,
+  shipping_address jsonb,
+  notes text,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  updated_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint orders_status_check check (
+    status in ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded')
+  ),
+  constraint orders_total_nonnegative check (total_amount >= 0)
+);
+
+create table public.order_items (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references public.orders(id) on delete cascade,
+  product_id uuid references public.products(id) on delete set null,
+  quantity integer not null,
+  price_at_purchase numeric not null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint order_items_quantity_positive check (quantity > 0),
+  constraint order_items_price_nonnegative check (price_at_purchase >= 0)
+);
+
+create table public.settings (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamp with time zone not null default timezone('utc'::text, now())
+);
+
+create table public.subscribers (
+  id uuid primary key default gen_random_uuid(),
+  email text not null,
+  source text not null default 'newsletter',
+  subscribed_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint subscribers_email_not_blank check (btrim(email) <> '')
+);
+
+create unique index subscribers_email_lower_key
+  on public.subscribers (lower(btrim(email)));
+
+create table public.notify_me (
+  id uuid primary key default gen_random_uuid(),
+  product_id uuid not null references public.products(id) on delete cascade,
+  email text,
+  phone text,
+  contact_raw text,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint notify_me_contact_present check (
+    nullif(btrim(email), '') is not null
+    or nullif(btrim(phone), '') is not null
+  )
+);
+
+create table public.episodes (
+  id uuid primary key default gen_random_uuid(),
+  episode_number integer not null,
+  title_en text not null,
+  title_ar text not null,
+  description_en text,
+  description_ar text,
+  category text,
+  duration text,
+  video_url text,
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint episodes_number_positive check (episode_number > 0)
+);
+
+create table public.push_tokens (
+  id uuid primary key default gen_random_uuid(),
+  token text not null,
+  device_name text,
+  platform text,
+  last_seen timestamp with time zone not null default timezone('utc'::text, now()),
+  created_at timestamp with time zone not null default timezone('utc'::text, now()),
+  constraint push_tokens_token_key unique (token),
+  constraint push_tokens_token_not_blank check (btrim(token) <> '')
+);
+
+alter table public.categories enable row level security;
+alter table public.products enable row level security;
+alter table public.product_images enable row level security;
+alter table public.orders enable row level security;
+alter table public.order_items enable row level security;
+alter table public.settings enable row level security;
+alter table public.subscribers enable row level security;
+alter table public.notify_me enable row level security;
+alter table public.episodes enable row level security;
+alter table public.push_tokens enable row level security;
+
+revoke all on table public.categories from public, anon, authenticated;
+revoke all on table public.products from public, anon, authenticated;
+revoke all on table public.product_images from public, anon, authenticated;
+revoke all on table public.orders from public, anon, authenticated;
+revoke all on table public.order_items from public, anon, authenticated;
+revoke all on table public.settings from public, anon, authenticated;
+revoke all on table public.subscribers from public, anon, authenticated;
+revoke all on table public.notify_me from public, anon, authenticated;
+revoke all on table public.episodes from public, anon, authenticated;
+revoke all on table public.push_tokens from public, anon, authenticated;
+
+grant usage on schema public to anon, authenticated, service_role;
+
+grant select on table public.categories to anon, authenticated;
+grant select on table public.products to anon, authenticated;
+grant select on table public.product_images to anon, authenticated;
+grant select on table public.settings to anon, authenticated;
+grant select on table public.episodes to anon, authenticated;
+grant insert (email, source) on table public.subscribers to anon, authenticated;
+grant insert (product_id, email, phone, contact_raw)
+  on table public.notify_me to anon, authenticated;
+
+grant all on table public.categories to service_role;
+grant all on table public.products to service_role;
+grant all on table public.product_images to service_role;
+grant all on table public.orders to service_role;
+grant all on table public.order_items to service_role;
+grant all on table public.settings to service_role;
+grant all on table public.subscribers to service_role;
+grant all on table public.notify_me to service_role;
+grant all on table public.episodes to service_role;
+grant all on table public.push_tokens to service_role;
+
+create policy categories_select_public
+  on public.categories for select
+  to anon, authenticated
+  using (true);
+
+create policy products_select_active
+  on public.products for select
+  to anon, authenticated
+  using (is_active is true);
+
+create policy product_images_select_public
+  on public.product_images for select
+  to anon, authenticated
+  using (true);
+
+create policy settings_select_public
+  on public.settings for select
+  to anon, authenticated
+  using (true);
+
+create policy episodes_select_public
+  on public.episodes for select
+  to anon, authenticated
+  using (true);
+
+create policy subscribers_insert_public
+  on public.subscribers for insert
+  to anon, authenticated
+  with check (btrim(email) <> '');
+
+create policy notify_me_insert_public
+  on public.notify_me for insert
+  to anon, authenticated
+  with check (
+    nullif(btrim(email), '') is not null
+    or nullif(btrim(phone), '') is not null
+  );
+
 -- Atomic, trusted and idempotent order creation for the create-order Edge Function.
 -- Apply this migration before deploying the matching frontend/Edge Function code.
 

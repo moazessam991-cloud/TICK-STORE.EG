@@ -16,11 +16,9 @@ function loadSeed() {
       straps: [],
       episodes: [],
       settings: {
-        bnpl: true,
         cod: true,
-        freeShip: true,
-        maintenance: false,
-        waNum: '+20 100 000 0000',
+        instapay: false,
+        waNum: '',
         dropDay: 'Monday',
         dropTime: '10:00',
         currency: 'EGP',
@@ -44,7 +42,6 @@ function seedIfEmpty(db, api) {
   if (!api.getJson(db, 'subscribers')) api.setJson(db, 'subscribers', []);
   if (!api.getJson(db, 'drops')) api.setJson(db, 'drops', []);
   if (!api.getJson(db, 'audit')) api.setJson(db, 'audit', []);
-  if (!api.getJson(db, 'reviews')) api.setJson(db, 'reviews', {});
   if (!api.getJson(db, 'notify_me')) api.setJson(db, 'notify_me', []);
 }
 
