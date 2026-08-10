@@ -4808,6 +4808,9 @@ function admSettings(){
       '<div class="tog-row"><div><div class="tog-l">Cash on Delivery</div><div class="tog-s">COD option at checkout</div></div><label class="toggle"><input type="checkbox" '+(S.settings.cod?'checked':'')+' onchange="togSet(\'cod\',this.checked)"><div class="tog-sl"></div></label></div>'+
       '<div class="tog-row"><div><div class="tog-l">InstaPay</div><div class="tog-s">Shown only when the preview host is also configured</div></div><label class="toggle"><input type="checkbox" '+(S.settings.instapay?'checked':'')+' onchange="togSet(\'instapay\',this.checked)"><div class="tog-sl"></div></label></div>'+
     '</div>'+
+    '<div class="scard"><h3>Admin Notifications</h3><p id="push-status">'+escHTML(pushStatus)+'</p>'+
+      '<button class="btn bp bsm" id="push-enable-btn" onclick="enableAdminPushNotifications()" '+(pushBlocked?'disabled':'')+'>'+escHTML(pushButtonLabel)+'</button>'+
+    '</div>'+
     '<div class="scard"><h3>Store Config</h3><p>Basic information</p>'+
       '<div class="fg2" style="margin-bottom:12px"><label class="fl">WhatsApp Number</label><input class="fi" id="wa-n" value="'+escHTML(S.settings.waNum||'')+'"></div>'+
       '<div class="form-row"><div class="fg2"><label class="fl">Drop Day</label><select class="fsel" id="dd"><option'+(S.settings.dropDay==='Monday'?' selected':'')+'>Monday</option><option'+(S.settings.dropDay==='Tuesday'?' selected':'')+'>Tuesday</option><option'+(S.settings.dropDay==='Wednesday'?' selected':'')+'>Wednesday</option></select></div><div class="fg2"><label class="fl">Drop Time</label><input class="fi" type="time" id="dt" value="'+escHTML(S.settings.dropTime||'10:00')+'"></div></div>'+

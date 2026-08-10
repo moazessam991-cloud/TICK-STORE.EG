@@ -14,3 +14,12 @@ entrypoint = "./functions/create-order/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/send-order-notification/index.ts"
+
+# Internal new-order push notification endpoint.
+# Supabase JWT verification is intentionally disabled because this function
+# authenticates server-to-server with TICK_PUSH_NOTIFICATION_SECRET and accepts
+# only an order_id; Firebase credentials and push tokens stay server-side.
+[functions.send-order-push]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/send-order-push/index.ts"

@@ -295,6 +295,84 @@ function queueOrderEmailNotification(orderId: string): void {
   runtime.waitUntil(task);
 }
 
+
+function queueOrderPushNotification(orderId: string): void {
+  if (Deno.env.get("TICK_PUSH_ENABLED") !== "true") {
+    return;
+  }
+
+  const supabaseUrl =
+    (Deno.env.get("SUPABASE_URL") || "").replace(/\/+$/, "");
+
+  const pushSecret =
+    Deno.env.get("TICK_PUSH_NOTIFICATION_SECRET") || "";
+
+  if (
+    !supabaseUrl ||
+    !UUID_PATTERN.test(orderId) ||
+    !HASH_PATTERN.test(pushSecret)
+  ) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "order_push_not_queued",
+      code: "ORDER_PUSH_CFG_001",
+      order_id: orderId,
+    }));
+    return;
+  }
+
+  const runtime = (
+    globalThis as typeof globalThis & {
+      EdgeRuntime?: { waitUntil(promise: Promise<unknown>): void };
+    }
+  ).EdgeRuntime;
+
+  if (!runtime?.waitUntil) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "order_push_runtime_unavailable",
+      code: "ORDER_PUSH_RUNTIME_001",
+      order_id: orderId,
+    }));
+    return;
+  }
+
+  const task = (async () => {
+    try {
+      const response = await fetch(
+        `${supabaseUrl}/functions/v1/send-order-push`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-tick-push-secret": pushSecret,
+          },
+          body: JSON.stringify({ order_id: orderId }),
+        },
+      );
+
+      if (!response.ok) {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "order_push_failed",
+          code: "ORDER_PUSH_HTTP_001",
+          order_id: orderId,
+          status: response.status,
+        }));
+      }
+    } catch {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "order_push_failed",
+        code: "ORDER_PUSH_NETWORK_001",
+        order_id: orderId,
+      }));
+    }
+  })();
+
+  runtime.waitUntil(task);
+}
+
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin");
   if (!isAllowedOrigin(origin)) return jsonResponse(origin, 403, { ok: false, error: "origin_not_allowed" });
@@ -395,6 +473,17 @@ Deno.serve(async (req: Request) => {
         level: "error",
         event: "order_notification_queue_failed",
         code: "ORDER_NOTIFY_QUEUE_001",
+        order_id: String(publicOrder.id),
+      }));
+    }
+
+    try {
+      queueOrderPushNotification(String(publicOrder.id));
+    } catch {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "order_push_queue_failed",
+        code: "ORDER_PUSH_QUEUE_001",
         order_id: String(publicOrder.id),
       }));
     }
