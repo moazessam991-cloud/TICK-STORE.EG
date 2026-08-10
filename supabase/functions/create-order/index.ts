@@ -225,6 +225,76 @@ function safeRpcError(error: { message?: string } | null): { status: number; cod
   return { status: 400, code };
 }
 
+function queueOrderEmailNotification(orderId: string): void {
+  const supabaseUrl = (Deno.env.get("SUPABASE_URL") || "").replace(/\/+$/, "");
+  const notificationSecret = Deno.env.get("TICK_NOTIFICATION_SECRET") || "";
+
+  if (
+    !supabaseUrl ||
+    !UUID_PATTERN.test(orderId) ||
+    !HASH_PATTERN.test(notificationSecret)
+  ) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "order_notification_not_queued",
+      code: "ORDER_NOTIFY_CFG_001",
+      order_id: orderId,
+    }));
+    return;
+  }
+
+  const runtime = (
+    globalThis as typeof globalThis & {
+      EdgeRuntime?: { waitUntil(promise: Promise<unknown>): void };
+    }
+  ).EdgeRuntime;
+
+  if (!runtime?.waitUntil) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "order_notification_runtime_unavailable",
+      code: "ORDER_NOTIFY_RUNTIME_001",
+      order_id: orderId,
+    }));
+    return;
+  }
+
+  const task = (async () => {
+    try {
+      const response = await fetch(
+        `${supabaseUrl}/functions/v1/send-order-notification`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-tick-notification-secret": notificationSecret,
+          },
+          body: JSON.stringify({ order_id: orderId }),
+        },
+      );
+
+      if (!response.ok) {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "order_notification_failed",
+          code: "ORDER_NOTIFY_HTTP_001",
+          order_id: orderId,
+          status: response.status,
+        }));
+      }
+    } catch {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "order_notification_failed",
+        code: "ORDER_NOTIFY_NETWORK_001",
+        order_id: orderId,
+      }));
+    }
+  })();
+
+  runtime.waitUntil(task);
+}
+
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin");
   if (!isAllowedOrigin(origin)) return jsonResponse(origin, 403, { ok: false, error: "origin_not_allowed" });
@@ -316,6 +386,19 @@ Deno.serve(async (req: Request) => {
       console.error(JSON.stringify({ level: "error", event: "order_creation_missing_result", code: "ORDER_CREATE_501" }));
       return jsonResponse(origin, 500, { ok: false, error: "order_creation_failed" });
     }
+    // Order creation is already committed at this point. Notification runs
+    // independently and must never change the successful checkout response.
+    try {
+      queueOrderEmailNotification(String(publicOrder.id));
+    } catch {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "order_notification_queue_failed",
+        code: "ORDER_NOTIFY_QUEUE_001",
+        order_id: String(publicOrder.id),
+      }));
+    }
+
     return jsonResponse(origin, 200, { ok: true, order: publicOrder });
   } catch {
     console.error(JSON.stringify({ level: "error", event: "order_request_failed", code: "ORDER_CREATE_502" }));

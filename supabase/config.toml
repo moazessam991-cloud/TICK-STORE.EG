@@ -6,6 +6,11 @@ verify_jwt = false
 import_map = "./functions/create-order/deno.json"
 entrypoint = "./functions/create-order/index.ts"
 
-# send-order-notification is intentionally absent: it is not deployable from
-# this project configuration. Its source returns 410 as a second fail-closed
-# control if somebody deploys that directory manually.
+# Internal new-order email notification endpoint.
+# Supabase JWT verification is intentionally disabled because this function
+# authenticates server-to-server with TICK_NOTIFICATION_SECRET and accepts
+# only an order_id; recipients/content are resolved from trusted server data.
+[functions.send-order-notification]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/send-order-notification/index.ts"

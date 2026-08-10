@@ -233,10 +233,24 @@ check('dashboard exposes escaped InstaPay verification fields', () => {
   assert(html.includes("escHTML(o.paymentReference||'—')"));
   assert(server.includes('paymentProofAvailable: !!row.payment_proof_path'));
 });
-check('preview checkout has no automatic notification side effects', () => {
+check('preview checkout isolates automatic email notification from order success', () => {
+  // Public checkout never owns provider credentials or recipient configuration.
   assert(!edge.includes('RESEND_API_KEY'));
+  assert(!edge.includes('ADMIN_EMAIL'));
   assert(!edge.includes('firebase.googleapis.com'));
   assert(!edge.includes('sendAdminPushNotifications'));
+
+  // Checkout may invoke only the hardened internal notification function.
+  assert(edge.includes('TICK_NOTIFICATION_SECRET'));
+  assert(edge.includes('/functions/v1/send-order-notification'));
+  assert(edge.includes('body: JSON.stringify({ order_id: orderId })'));
+  assert(edge.includes('x-tick-notification-secret'));
+
+  // Notification work is detached from the customer response.
+  assert(edge.includes('EdgeRuntime'));
+  assert(edge.includes('waitUntil'));
+  assert(edge.includes('queueOrderEmailNotification(String(publicOrder.id))'));
+  assert(edge.includes('order_notification_queue_failed'));
 });
 check('checkout conditionally exposes only COD and InstaPay', () => {
   assert(checkout.includes("selPay(\\'COD\\')"));
