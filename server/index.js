@@ -1,5 +1,7 @@
 'use strict';
 
+const backendSentry = require('./sentry');
+
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -463,6 +465,7 @@ const app = express();
 if (TRUST_PROXY_HOPS) {
   app.set('trust proxy', TRUST_PROXY_HOPS);
 }
+app.use(backendSentry.handled5xxMiddleware);
 app.use(helmet({
   contentSecurityPolicy: false, // Site is a large SPGA with many inline scripts/styles for now
 }));
@@ -2096,6 +2099,8 @@ app.post('/api/public/order', publicApiLimiter, (req, res) => {
 /* Removed legacy /api/public/newsletter and /api/public/notify routes. Their
    live callers use Supabase directly, so the old local-only shapes had no
    customer-facing call sites and could silently drift from canonical data. */
+
+backendSentry.setupExpressErrorHandler(app);
 
 app.listen(PORT, () => {
   console.log(`TICK API listening on http://127.0.0.1:${PORT}/api/health`);

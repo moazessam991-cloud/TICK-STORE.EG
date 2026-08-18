@@ -22,7 +22,8 @@
     "test:admin-content": "node scripts/admin-content-settings-test.js",
     "test:preview-server": "node scripts/preview-server-security-test.js",
     "test:sentry": "node scripts/sentry-privacy-test.js",
-    "test:preview": "npm run test:syntax && npm run test:sentry && npm run test:migrations && npm run test:audit && npm run test:instapay && npm run test:order-status && npm run test:product-images && npm run test:phase1-verifier && npm run test:email-relay && npm run test:push && npm run test:order-abuse && npm run test:admin-content && npm run test:preview-server && npm run test:twilio-normalize",
+    "test:sentry-backend": "node scripts/backend-sentry-security-test.js",
+    "test:preview": "npm run test:syntax && npm run test:sentry && npm run test:sentry-backend && npm run test:migrations && npm run test:audit && npm run test:instapay && npm run test:order-status && npm run test:product-images && npm run test:phase1-verifier && npm run test:email-relay && npm run test:push && npm run test:order-abuse && npm run test:admin-content && npm run test:preview-server && npm run test:twilio-normalize",
     "test:all": "npm run test:preview",
     "seed:extract": "node scripts/extract-seed-from-html.js",
     "test:push": "node scripts/push-notification-security-test.js"
@@ -31,6 +32,7 @@
     "node": "20.x"
   },
   "dependencies": {
+    "@sentry/node": "^10.70.0",
     "@supabase/supabase-js": "^2.109.0",
     "better-sqlite3": "^11.7.0",
     "cookie-parser": "^1.4.7",
