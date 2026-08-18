@@ -2088,6 +2088,13 @@ app.post('/api/admin/whatsapp/send', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/admin/sentry-test-error', requireAuth, (_req, res) => {
+  if (process.env.TICK_SENTRY_TEST_ENDPOINT === 'true') {
+    throw new Error('TICK Backend Sentry preview verification');
+  }
+  return res.status(404).json({ error: 'not_found' });
+});
+
 /* The storefront has one order path: the hardened create-order Edge Function.
    The former compatibility endpoint had a different validation/rate policy
    and automatic external side effects, so it is deliberately retired. */
