@@ -627,35 +627,6 @@ assert.strictEqual(
   1
 );
 
-/* Verify the temporary admin-only Sentry ingestion test route. */
-const sentryTestRoutePath = '/api/admin/sentry-test-error';
-const sentryTestRouteStart = serverSource.indexOf(
-  `app.post('${sentryTestRoutePath}', requireAuth,`
-);
-const sentryTestRouteEnd = serverSource.indexOf(
-  '\n});',
-  sentryTestRouteStart
-);
-
-assert.strictEqual(
-  serverSource.split(sentryTestRoutePath).length - 1,
-  1,
-  'Sentry test route was not registered exactly once'
-);
-assert(sentryTestRouteStart !== -1, 'Sentry test route must use requireAuth');
-assert(sentryTestRouteEnd !== -1, 'Sentry test route block was not found');
-
-const sentryTestRoute = serverSource.slice(
-  sentryTestRouteStart,
-  sentryTestRouteEnd + 4
-);
-
-assert(sentryTestRoute.includes("process.env.TICK_SENTRY_TEST_ENDPOINT === 'true'"));
-assert(sentryTestRoute.includes("return res.status(404).json({ error: 'not_found' });"));
-assert(sentryTestRoute.includes("throw new Error('TICK Backend Sentry preview verification');"));
-assert(!/sbAdmin|req\.body|req\.query|stock|orders|payments|products?|restock|\.insert\(|\.update\(|\.upsert\(|\.delete\(|\.rpc\(/i.test(sentryTestRoute));
-assert(sentryTestRouteStart < setupHook);
-
 console.log(
-  'backend-sentry-security-test: disabled mode, SDK privacy, redaction, handled 5xx, Express errors, dedupe, hook order, and guarded test route passed'
+  'backend-sentry-security-test: disabled mode, SDK privacy, redaction, handled 5xx, Express errors, dedupe, and hook order passed'
 );
