@@ -2708,7 +2708,8 @@ function initCursor(){
     // Outer ring — CSS 55ms linear transition does the smooth trail (no JS lerp)
     o.style.transform='translate(-50%,-50%) translate3d('+x+'px,'+y+'px,0)';
     // Spotlight on product cards — inline (no RAF overhead)
-    const card=e.target.closest('.zcard,.pcard');
+    const targetEl=e.target&&typeof e.target.closest==='function'?e.target:e.target&&e.target.parentElement;
+    const card=targetEl?targetEl.closest('.zcard,.pcard'):null;
     if(card!==_lastSpotCard){_lastSpotCard=card;_spotRect=card?card.getBoundingClientRect():null;}
     if(card&&_spotRect){
       card.style.setProperty('--mx',(x-_spotRect.left)+'px');
@@ -2719,8 +2720,8 @@ function initCursor(){
   },{passive:true});
   document.addEventListener('mousedown',()=>{o.classList.add('click');setTimeout(()=>o.classList.remove('click'),200)});
   const sel='button,a,[onclick],[role="button"],[class*="card"],[class*="opt"],[class*="tab"],[class*="btn"],[class*="csw"],[class*="stype"],[class*="asb-l"],[class*="qopt"],[class*="acard"],[class*="pcard"],[class*="nl"],[class*="mob-nl"],[class*="frow"],[class*="bnpl-opt"],[class*="pay-opt"],[class*="tog-row"],[class*="ctab"],[class*="lcat"],[class*="ta"],[class*="epo"],[class*="copt"],[class*="tag-opt"],[class*="pd-thumb"],[class*="pd-mtab"]';
-  document.addEventListener('mouseover',e=>{if(o&&e.target.closest(sel))o.classList.add('big')},{passive:true});
-  document.addEventListener('mouseout',e=>{if(o&&e.target.closest(sel))o.classList.remove('big')},{passive:true});
+  document.addEventListener('mouseover',e=>{const t=e.target&&typeof e.target.closest==='function'?e.target:e.target&&e.target.parentElement;if(o&&t&&t.closest(sel))o.classList.add('big')},{passive:true});
+  document.addEventListener('mouseout',e=>{const t=e.target&&typeof e.target.closest==='function'?e.target:e.target&&e.target.parentElement;if(o&&t&&t.closest(sel))o.classList.remove('big')},{passive:true});
 }
 
 /* ═══════════════════════════════════════════════════
@@ -5486,7 +5487,8 @@ function productGalleryPointerEnd(e){
 }
 function productGalleryPointerCancel(){if(S.pdGalleryGesture)S.pdGalleryGesture.moved=true}
 function productGalleryTapped(e){
-  if(!e.target.closest('.pd-gallery-main'))return;
+  const t=e.target&&typeof e.target.closest==='function'?e.target:e.target&&e.target.parentElement;
+  if(!t||!t.closest('.pd-gallery-main'))return;
   const moved=!!(S.pdGalleryGesture&&S.pdGalleryGesture.moved);
   S.pdGalleryGesture=null;
   if(moved){e.preventDefault();return;}
