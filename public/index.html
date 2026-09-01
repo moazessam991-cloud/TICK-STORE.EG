@@ -2554,6 +2554,10 @@ function render(p){
     if(p==='/'||p===''||p==='/index.html'||(!p.startsWith('/admin')&&p.endsWith('.html')))rHome();
     else if(p==='/shop')rShop();
     else if(p==='/quiz'){iQuiz();rQuizQ()}
+    else if(p==='/quiz/result'){
+      if(S.quiz&&S.quiz.resultKey)showQRes(true);
+      else{iQuiz();rQuizQ()}
+    }
     else if(p==='/second-hand')rSecondHand();
     else if(p==='/second-hand'||p==='/archive')rSecondHand();
     else if(p==='/straps')rStraps();
@@ -5688,7 +5692,7 @@ function addWatchGeometry(group){
   const s2=s1.clone();s2.position.y=-.35;group.add(s2);
 }
 /* QUIZ */
-function iQuiz(){S.quiz={answers:[],cur:0,sel:null}}
+function iQuiz(){S.quiz={answers:[],cur:0,sel:null,resultKey:null}}
 function rQuizQ(){
   const q=QQS[S.quiz.cur],prog=((S.quiz.cur+1)/QQS.length*100).toFixed(0);
   document.getElementById('app').innerHTML='<div class="pin"><div class="qpage"><div class="qwrap">'+
@@ -5703,19 +5707,28 @@ function rQuizQ(){
 function selQ(i,el){document.querySelectorAll('.qopt').forEach(o=>o.classList.remove('sel'));el.classList.add('sel');S.quiz.sel=i}
 function qNext(){if(S.quiz.sel===null){toast('⚠️','Pick an option to continue');return}S.quiz.answers[S.quiz.cur]=S.quiz.sel;if(S.quiz.cur<QQS.length-1){S.quiz.cur++;S.quiz.sel=S.quiz.answers[S.quiz.cur]!==undefined?S.quiz.answers[S.quiz.cur]:null;rQuizQ()}else showQRes()}
 function qBack(){if(S.quiz.cur>0){S.quiz.cur--;S.quiz.sel=S.quiz.answers[S.quiz.cur];rQuizQ()}}
-function showQRes(){
+function showQRes(restoring=false){
   const a=S.quiz.answers;
-  let key='understated';if(a[1]===2)key='investor';else if(a[0]===1&&a[3]===1)key='street';else if(a[2]===0)key='craft';
+  let key=S.quiz.resultKey;
+  if(!key){
+    key='understated';if(a[1]===2)key='investor';else if(a[0]===1&&a[3]===1)key='street';else if(a[2]===0)key='craft';
+    S.quiz.resultKey=key;
+  }
   const allRes=getQRes();
-  const res=allRes[key];mktTrackQuiz(key);
+  const res=allRes[key];if(!restoring)mktTrackQuiz(key);
+  if(!restoring){
+    S.path='/quiz/result';
+    try{history.replaceState(null,'','/quiz/result')}
+    catch(_){try{location.hash='/quiz/result'}catch(__){}}
+  }
   const watches=res.pids.map(id=>S.prods.find(p=>String(p.id)===String(id))).filter(Boolean);
   document.getElementById('app').innerHTML='<div class="pin"><div class="qpage"><div class="qwrap"><div class="qresult">'+
     '<div class="qr-badge">Your vibe: '+escHTML(res.badge)+'</div>'+
     '<div class="qr-title">'+escHTML(res.title)+'</div>'+
     '<div class="qr-desc">'+escHTML(res.desc)+'</div>'+
     '<div class="qr-cards">'+watches.map(w=>'<div class="qrc" onclick="go(\'/product/'+w.id+'\')"><div class="qrc-em">'+(w.photos&&w.photos.length?'<img src="'+escHTML(w.photos[0])+'" style="width:38px;height:38px;object-fit:cover;border-radius:var(--r)">':escHTML(w.emoji))+'</div><div class="qrc-br">'+escHTML(w.brand)+'</div><div class="qrc-nm">'+escHTML(w.name)+'</div><div class="qrc-pr">'+fp(productDisplayPrice(w))+'</div></div>').join('')+'</div>'+
-    '<div class="qr-cta"><button class="btn bp" onclick="go(\'/shop\')">Shop my matches →</button><button class="qrt" onclick="iQuiz();rQuizQ()">Retake quiz</button></div>'+
-  '</div></div></div></div>';confetti();
+    '<div class="qr-cta"><button class="btn bp" onclick="go(\'/shop\')">Shop my matches →</button><button class="qrt" onclick="go(\'/quiz\',true)">Retake quiz</button></div>'+
+  '</div></div></div></div>';if(!restoring)confetti();
 }
 /* ARCHIVE */
 function rSecondHand(){
