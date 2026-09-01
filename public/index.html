@@ -5461,7 +5461,7 @@ function pdMediaTabs(p){
 function pdThumbs(p){
   const photos=productGalleryPhotos(p);
   if(photos.length<2)return '';
-  return '<div class="pd-thumbs" aria-label="Product image thumbnails">'+photos.map((ph,i)=>'<button class="pd-thumb'+(S.pdThumb===i?' on':'')+'" type="button" aria-label="Show product image '+(i+1)+'" aria-current="'+(S.pdThumb===i?'true':'false')+'" onclick="switchThumb('+i+',\''+escHTML(p.id)+'\')"><img src="'+escHTML(ph)+'" alt="" loading="lazy" decoding="async" onerror="this.closest(\'.pd-thumb\').style.display=\'none\'"></button>').join('')+'</div>';
+  return '<div class="pd-thumbs" aria-label="Product image thumbnails">'+photos.map((ph,i)=>'<button class="pd-thumb'+(S.pdThumb===i?' on':'')+'" type="button" aria-label="Show product image '+(i+1)+'" aria-current="'+(S.pdThumb===i?'true':'false')+'" onclick="switchThumb('+i+',\''+escHTML(p.id)+'\')"><img src="'+escHTML(ph)+'" alt="" loading="lazy" decoding="async" onerror="const t=this.closest(\'.pd-thumb\');if(t)t.style.display=\'none\'"></button>').join('')+'</div>';
 }
 function productGalleryImageError(img){const slide=img&&img.closest('.pd-gallery-slide,.zoom-slide');if(slide)slide.classList.add('image-error')}
 function initProductGallery(){
