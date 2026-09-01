@@ -2524,6 +2524,8 @@ function getPath(){
   return location.pathname || '/';
 }
 function go(path,rep){
+  const currentPath=S.path||getPath()||'/';
+  if(path.startsWith('/product/')&&!currentPath.startsWith('/product/'))S.lastPage=currentPath;
   S.path=path;
   try{
     if(IS_SRCDOC){
@@ -2541,6 +2543,7 @@ function go(path,rep){
 window.addEventListener('popstate',()=>render(getPath()));
 window.addEventListener('hashchange',()=>render(getPath()));
 function render(p){
+  S.path=p;
   clearPageTimers();
   const app=document.getElementById('app');
   app.classList.add('fading');
@@ -5369,6 +5372,10 @@ function currentProductGallery(){
   const p=S.prods.find(x=>String(x.id)===String(S.pdProductId));
   return {p,photos:productGalleryPhotos(p)};
 }
+function productBack(){
+  const dest=(S.lastPage&&typeof S.lastPage==='string'&&!S.lastPage.startsWith('/product/'))?S.lastPage:'/shop';
+  go(dest,true);
+}
 function rProd(id){
   const p=S.prods.find(x=>String(x.id)===String(id));
   const app=document.getElementById('app');
@@ -5385,13 +5392,13 @@ const low=!out && p.stock_quantity>0 && p.stock_quantity<=5;
   const stk=out?'<span class="stk-badge stk-out">Out of stock</span>':low?'<span class="stk-badge stk-low">Only '+p.stock_quantity+' left</span>':'<span class="stk-badge stk-ok">In stock</span>';
   app.innerHTML='<div class="pin"><div class="pd-lay">'+
     '<div class="pd-left">'+
-      '<button class="pd-bb" onclick="go(S.lastPage||\'/shop\')">← Back</button>'+
+      '<button class="pd-bb" onclick="productBack()">← Back</button>'+
       '<div class="pd-gallery" id="pd-gallery">'+pdGalleryMain(p)+'</div>'+
       pdMediaTabs(p)+pdThumbs(p)+
       '<div class="pd-cert">Product details provided by the store</div>'+
     '</div>'+
     '<div class="pd-right">'+
-    '<div class="pd-bc" onclick="go(S.lastPage||\'/shop\')">← Back</div>'+
+    '<div class="pd-bc" onclick="productBack()">← Back</div>'+
       '<div class="pd-brand">'+escHTML(p.brand)+'</div>'+
       '<div class="pd-name">'+escHTML(p.name)+'</div>'+
       '<div class="pd-ref">REF. TICK-'+refCode(p.id)+' · 2026</div>'+
