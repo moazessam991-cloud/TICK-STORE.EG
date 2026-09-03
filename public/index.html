@@ -3290,6 +3290,13 @@ function showCheckout(){
   S.ckStep=1;S.ckData={};S.selPay=paymentMethods[0];S.ckOrderId='';S.ckSubmitting=false;
   S.ckRequestId=(crypto.randomUUID&&crypto.randomUUID())||genToken();
   toggleCart();renderCK();
+  if(typeof window.tickMetaInitiateCheckout==='function'){
+    const metaCheckoutTotal=S.cart.reduce((a,i)=>moneyAmount(a+finiteAmount(i.price)*Math.max(1,Number(i.qty)||1)),0);
+    window.tickMetaInitiateCheckout({
+      items:S.cart.map(i=>({id:i.pid,value:i.price,quantity:Math.max(1,Number(i.qty)||1)})),
+      value:metaCheckoutTotal
+    });
+  }
 }
 function renderCK(){
   const total=S.cart.reduce((a,i)=>moneyAmount(a+finiteAmount(i.price)*Math.max(1,Number(i.qty)||1)),0);

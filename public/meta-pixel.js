@@ -145,4 +145,54 @@
     }
   };
 
+  window.tickMetaInitiateCheckout = function (checkout) {
+    try {
+      if (!checkout || typeof checkout !== 'object') return;
+
+      const rawItems = Array.isArray(checkout.items) ? checkout.items : [];
+      const value = Number(checkout.value);
+
+      if (!rawItems.length || !Number.isFinite(value) || value < 0) return;
+
+      const contents = [];
+      const contentIds = [];
+      let numItems = 0;
+
+      rawItems.forEach(function (item) {
+        if (!item || typeof item !== 'object') return;
+
+        const id = String(item.id ?? '').trim();
+        const unitValue = Number(item.value);
+        const rawQuantity = Number(item.quantity);
+        const quantity = Number.isFinite(rawQuantity) && rawQuantity > 0
+          ? Math.floor(rawQuantity)
+          : 1;
+
+        if (!id || !Number.isFinite(unitValue) || unitValue < 0 || quantity < 1) return;
+
+        contents.push({
+          id,
+          quantity,
+          item_price: unitValue
+        });
+
+        if (!contentIds.includes(id)) contentIds.push(id);
+        numItems += quantity;
+      });
+
+      if (!contents.length || !initPixel()) return;
+
+      window.fbq('track', 'InitiateCheckout', {
+        content_ids: contentIds,
+        content_type: 'product',
+        contents,
+        num_items: numItems,
+        value,
+        currency: 'EGP'
+      });
+    } catch (_) {
+      /* Analytics must never break the storefront. */
+    }
+  };
+
 })();
