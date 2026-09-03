@@ -2,12 +2,13 @@
 
 /*
  * TICK. Meta Pixel
- * Public storefront PageView tracking only.
+ * Public storefront Meta Pixel tracking.
  * No customer fields, checkout data, or admin routes are sent here.
  */
 (function () {
   const PIXEL_ID = '1550216229722393';
   let lastPath = null;
+  let lastViewContentKey = null;
   let initialized = false;
 
   function canTrack() {
@@ -59,6 +60,9 @@
     try {
       const p = String(path || '/');
 
+      /* A real route change starts a fresh content-view scope. */
+      if (p !== lastPath) lastViewContentKey = null;
+
       /* Never include the private admin area in storefront analytics. */
       if (p.startsWith('/admin')) {
         lastPath = p;
@@ -72,6 +76,34 @@
 
       lastPath = p;
       window.fbq('track', 'PageView');
+    } catch (_) {
+      /* Analytics must never break the storefront. */
+    }
+  };
+
+  window.tickMetaViewContent = function (product) {
+    try {
+      if (!product || typeof product !== 'object') return;
+
+      const id = String(product.id ?? '').trim();
+      const name = String(product.name ?? '').trim();
+      const value = Number(product.value);
+
+      if (!id || !Number.isFinite(value) || value < 0) return;
+
+      /* One ViewContent per product route visit, not per internal re-render. */
+      if (lastViewContentKey === id) return;
+
+      if (!initPixel()) return;
+
+      lastViewContentKey = id;
+      window.fbq('track', 'ViewContent', {
+        content_ids: [id],
+        content_name: name || id,
+        content_type: 'product',
+        value,
+        currency: 'EGP'
+      });
     } catch (_) {
       /* Analytics must never break the storefront. */
     }

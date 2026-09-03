@@ -5393,6 +5393,7 @@ function rProd(id){
   S.pdProductId=String(p.id);S.pdThumb=0;
   S.pdMediaTab=hasPh?'photo':hasVid?'video':has3d?'3d':'photo';
   const dp=productDisplayPrice(p);
+  if(typeof window.tickMetaViewContent==='function')window.tickMetaViewContent({id:p.id,name:p.name,value:dp});
   const wished=S.wish.has(p.id);
   const out=isProductOutOfStock(p);
 const low=!out && p.stock_quantity>0 && p.stock_quantity<=5;
