@@ -2879,6 +2879,7 @@ function addToCart(id,name,price,emoji,brand,bg,thumb){
   renderCart();
   updCN();
   mktTrackCartAdd(id);
+  if(typeof window.tickMetaAddToCart==='function')window.tickMetaAddToCart({id:pid,name,value:price,quantity:1});
   toast('✓',name+' added to cart');
 }
 function remCart(cid){S.cart=S.cart.filter(i=>i.cid!==cid);saveCart();renderCart();updCN()}
@@ -5843,7 +5844,9 @@ function addStrap(){
   // row, same as any watch. isSt/strapConfig are cart-display + order-item
   // metadata only (see sbCreateOrder in 1supabase-client.js), not an ID hack.
   S.cart.push({cid:'strapcart-'+Date.now(),pid:t.id,name:escHTML(t.name)+' · '+escHTML(c.n)+' · '+escHTML(w),price,emoji:t.emoji||'🪢',brand:t.brand||'TICK. Straps',bg:t.bg||'#E0EDE4',qty:1,isSt:true,strapConfig:{color:c.n,colorHex:c.h,width:w}});
-  saveCart();renderCart();updCN();toast('✓','Strap added to cart!');
+  saveCart();renderCart();updCN();
+  if(typeof window.tickMetaAddToCart==='function')window.tickMetaAddToCart({id:t.id,name:t.name,value:price,quantity:1});
+  toast('✓','Strap added to cart!');
 }
 /* LEARN */
 function rLearn(){
