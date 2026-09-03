@@ -25,6 +25,8 @@
 <meta name="description" content="Curated watches, straps, and watch education with COD and configured InstaPay checkout.">
 <!-- Sentry: preview error monitoring only -->
 <script src="/sentry-preview.js"></script>
+<!-- Meta Pixel: public storefront PageView tracking -->
+<script src="/meta-pixel.js"></script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230A4A36'/><text y='48' x='8' font-size='46'>⌚</text></svg>">
 <!-- Optimized: removed wght:300 (unused), reduced Cairo to 2 weights, added &display=swap -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Cairo:wght@600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -2544,6 +2546,7 @@ window.addEventListener('popstate',()=>render(getPath()));
 window.addEventListener('hashchange',()=>render(getPath()));
 function render(p){
   S.path=p;
+  if(typeof window.tickMetaPageView==='function')window.tickMetaPageView(p);
   clearPageTimers();
   const app=document.getElementById('app');
   app.classList.add('fading');
@@ -5720,6 +5723,7 @@ function showQRes(restoring=false){
     S.path='/quiz/result';
     try{history.replaceState(null,'','/quiz/result')}
     catch(_){try{location.hash='/quiz/result'}catch(__){}}
+    if(typeof window.tickMetaPageView==='function')window.tickMetaPageView('/quiz/result');
   }
   const watches=res.pids.map(id=>S.prods.find(p=>String(p.id)===String(id))).filter(Boolean);
   document.getElementById('app').innerHTML='<div class="pin"><div class="qpage"><div class="qwrap"><div class="qresult">'+
