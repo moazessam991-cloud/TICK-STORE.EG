@@ -9,6 +9,7 @@
   const MEASUREMENT_ID = 'G-R1RMH4JQ8S';
   let initialized = false;
   let lastPath = null;
+  let lastViewItemKey = null;
 
   function canTrack() {
     try {
@@ -74,6 +75,9 @@
     try {
       const p = String(path || '/');
 
+      /* A real route change starts a fresh ecommerce-view scope. */
+      if (p !== lastPath) lastViewItemKey = null;
+
       /* Never include the private admin area in storefront analytics. */
       if (p.startsWith('/admin')) {
         lastPath = p;
@@ -89,6 +93,40 @@
 
       window.gtag('event', 'page_view', {
         page_location: window.location.href
+      });
+    } catch (_) {
+      /* Analytics must never break the storefront. */
+    }
+  };
+
+  window.tickGaViewItem = function (product) {
+    try {
+      if (!product || typeof product !== 'object') return;
+
+      const id = String(product.id ?? '').trim();
+      const name = String(product.name ?? '').trim();
+      const brand = String(product.brand ?? '').trim();
+      const value = Number(product.value);
+
+      if (!id || !name || !Number.isFinite(value) || value < 0) return;
+
+      /* One ecommerce product view per real product-route visit. */
+      if (lastViewItemKey === id) return;
+
+      if (!initGA()) return;
+
+      lastViewItemKey = id;
+
+      window.gtag('event', 'view_item', {
+        currency: 'EGP',
+        value,
+        items: [{
+          item_id: id,
+          item_name: name,
+          item_brand: brand,
+          price: value,
+          quantity: 1
+        }]
       });
     } catch (_) {
       /* Analytics must never break the storefront. */

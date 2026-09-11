@@ -2548,6 +2548,12 @@ window.addEventListener('popstate',()=>render(getPath()));
 window.addEventListener('hashchange',()=>render(getPath()));
 function render(p){
   S.path=p;
+  const gaProduct=p.startsWith('/product/')&&Array.isArray(S.prods)
+    ?S.prods.find(x=>String(x.id)===String(decodeURIComponent(p.split('/')[2]||'')))
+    :null;
+  document.title=gaProduct&&String(gaProduct.name||'').trim()
+    ?String(gaProduct.name).trim()+' — TICK.'
+    :'TICK. — Egyptian Watch Culture';
   if(typeof window.tickMetaPageView==='function')window.tickMetaPageView(p);
   if(typeof window.tickGaPageView==='function')window.tickGaPageView(p);
   clearPageTimers();
@@ -5405,6 +5411,7 @@ function rProd(id){
   S.pdMediaTab=hasPh?'photo':hasVid?'video':has3d?'3d':'photo';
   const dp=productDisplayPrice(p);
   if(typeof window.tickMetaViewContent==='function')window.tickMetaViewContent({id:p.id,name:p.name,value:dp});
+  if(typeof window.tickGaViewItem==='function')window.tickGaViewItem({id:p.id,name:p.name,brand:p.brand,value:dp});
   const wished=S.wish.has(p.id);
   const out=isProductOutOfStock(p);
 const low=!out && p.stock_quantity>0 && p.stock_quantity<=5;
