@@ -2930,6 +2930,22 @@ function updQty(cid,d){
   updCN();
 }
 function updCN(){const n=S.cart.reduce((a,i)=>a+Math.max(1,Number(i.qty)||1),0);document.getElementById('cn').textContent=n}
+function cartDisplayThumb(it){
+  if(!it||it.isSt===true)return it&&it.thumb||null;
+  const product=S.prods.find(p=>String(p.id)===String(it.pid));
+  return (product&&product.cardThumb)||it.thumb||null;
+}
+function cartImageError(img){
+  if(!img)return;
+  const fallback=img.dataset&&img.dataset.original;
+  if(fallback){
+    img.dataset.original='';
+    img.src=fallback;
+    return;
+  }
+  img.hidden=true;
+  img.removeAttribute('src');
+}
 function renderCart(){
   const el=document.getElementById('cp-items'),foot=document.getElementById('cp-foot'),sub=document.getElementById('cp-sub');
   if(!sub||!el||!foot)return;
@@ -2943,8 +2959,11 @@ function renderCart(){
   const frag=document.createDocumentFragment();
   S.cart.forEach(it=>{
     const sub2=moneyAmount(finiteAmount(it.price)*Math.max(1,Number(it.qty)||1));tot=moneyAmount(tot+sub2);
+    const displayThumb=cartDisplayThumb(it);
+    const originalThumb=it.thumb||'';
+    const fallbackThumb=displayThumb&&originalThumb&&displayThumb!==originalThumb?originalThumb:'';
     const div=document.createElement('div');div.className='ci';
-    div.innerHTML='<div class="ci-img">'+(it.thumb?'<img src="'+escHTML(it.thumb)+'" alt="" decoding="async" style="width:62px;height:62px;object-fit:cover">':escHTML(it.emoji||'⌚'))+'</div>'+
+    div.innerHTML='<div class="ci-img">'+(displayThumb?'<img src="'+escHTML(displayThumb)+'" data-original="'+escHTML(fallbackThumb)+'" onerror="cartImageError(this)" alt="" decoding="async" style="width:62px;height:62px;object-fit:cover">':escHTML(it.emoji||'⌚'))+'</div>'+
       '<div class="ci-body"><div class="ci-br">'+escHTML(it.brand)+'</div><div class="ci-nm">'+escHTML(it.name)+'</div><div class="ci-pr">'+fp(sub2)+'</div>'+
       '<div class="ci-qty"><button class="qb" onclick="updQty(\''+escHTML(it.cid)+'\',-1)">−</button><div class="qnum">'+(it.qty||1)+'</div><button class="qb" onclick="updQty(\''+escHTML(it.cid)+'\',1)">+</button></div></div>'+
       '<button class="ci-rm" onclick="remCart(\''+escHTML(it.cid)+'\')" aria-label="Remove">×</button>';
@@ -3316,9 +3335,9 @@ function renderCK(){
   if(S.ckStep===1){
     html='<div class="ck"><h2>Review Cart</h2><p class="ck-sub">'+S.cart.length+' items · '+fp(total)+'</p>'+
     '<div style="max-height:220px;overflow-y:auto;margin-bottom:22px">'+
-      S.cart.map(it=>'<div class="cri"><div class="cri-img">'+(it.thumb?'<img src="'+escHTML(it.thumb)+'" alt="" style="width:52px;height:52px;object-fit:cover">':escHTML(it.emoji||'⌚'))+'</div>'+
+      S.cart.map(it=>{const displayThumb=cartDisplayThumb(it),originalThumb=it.thumb||'',fallbackThumb=displayThumb&&originalThumb&&displayThumb!==originalThumb?originalThumb:'';return '<div class="cri"><div class="cri-img">'+(displayThumb?'<img src="'+escHTML(displayThumb)+'" data-original="'+escHTML(fallbackThumb)+'" onerror="cartImageError(this)" alt="" style="width:52px;height:52px;object-fit:cover">':escHTML(it.emoji||'⌚'))+'</div>'+
         '<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escHTML(it.name)+'</div><div style="font-size:12px;color:var(--ink4)">Qty: '+(it.qty||1)+'</div></div>'+
-        '<div style="font-family:var(--serif);font-size:16px">'+fp(moneyAmount(finiteAmount(it.price)*Math.max(1,Number(it.qty)||1)))+'</div></div>').join('')+
+        '<div style="font-family:var(--serif);font-size:16px">'+fp(moneyAmount(finiteAmount(it.price)*Math.max(1,Number(it.qty)||1)))+'</div></div>'}).join('')+
     '</div>'+
     '<div style="display:flex;justify-content:space-between;padding:14px 0;border-top:2px solid var(--ink);margin-bottom:22px"><div style="font-size:15px;font-weight:700">Total</div><div style="font-family:var(--serif);font-size:30px">'+fp(total)+'</div></div>'+
     '<button class="btn bp bw" style="padding:15px" onclick="S.ckStep=2;renderCK()">Continue to Delivery →</button>'+
