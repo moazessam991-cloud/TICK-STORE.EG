@@ -41,6 +41,21 @@ function _db() {
   return window.sbClient;
 }
 
+function sbProductCardImageUrl(imageRow, productId) {
+  const id = String(productId || '');
+  const storagePath = imageRow && imageRow.storage_path;
+  const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null;
+  if (typeof storagePath !== 'string' || storagePath.includes('..') || storagePath.includes('\\')) return null;
+  const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`^${escapedId}/(${uuid})\\.(jpg|png|webp)$`, 'i').exec(storagePath);
+  if (!match || !window.sbClient) return null;
+  const result = window.sbClient.storage
+    .from('product-images')
+    .getPublicUrl(`${id}/cards/${match[1]}.webp`);
+  return result && result.data ? result.data.publicUrl || null : null;
+}
+
 // ─── DATA FETCHING ───
 async function sbGetProducts() {
   if (!window.sbClient) return { data: null, error: new Error('Supabase not initialised') };

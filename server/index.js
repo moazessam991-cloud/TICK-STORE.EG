@@ -17,6 +17,11 @@ const { seedIfEmpty } = require('./defaults');
 const twilioWa = require('./twilioWhatsApp');
 const { createClient } = require('@supabase/supabase-js');
 const WebSocket = require('ws');
+const {
+  createProductCardImage,
+  deriveProductCardPath,
+  isSafeProductImagePath,
+} = require('./productImageCards');
 
 global.WebSocket = WebSocket;
 
@@ -362,17 +367,6 @@ function safeProductImagePayload(image) {
   };
 }
 
-function isSafeProductImagePath(storagePath, productId) {
-  if (typeof storagePath !== 'string' || storagePath.length > 500) return false;
-  if (!UUID_PATTERN.test(productId)) return false;
-  if (storagePath.includes('..') || storagePath.includes('\\')) return false;
-  const escapedProductId = productId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(
-    `^${escapedProductId}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(jpg|png|webp)$`,
-    'i'
-  ).test(storagePath);
-}
-
 function safeSupabaseErrorCode(error) {
   if (!error || typeof error !== 'object') return 'unknown';
   return sanitizeString(error.code || error.name || error.statusCode || 'unknown', 80) || 'unknown';
@@ -421,6 +415,30 @@ async function removeProductImageObjects(storagePaths, context) {
   }
 
   return { ok: true, completedCount };
+}
+
+async function uploadProductCardDerivative(storagePath, productId, originalBuffer) {
+  let cardPath;
+  try {
+    cardPath = deriveProductCardPath(storagePath, productId);
+    const cardBuffer = await createProductCardImage(originalBuffer);
+    const { error } = await sbAdmin.storage
+      .from(PRODUCT_IMAGE_BUCKET)
+      .upload(cardPath, cardBuffer, {
+        contentType: 'image/webp',
+        cacheControl: '31536000',
+        upsert: false,
+      });
+    if (error) throw error;
+    return cardPath;
+  } catch (error) {
+    logProductImageCleanupWarning(
+      'product_card_derivative_failed',
+      { productId, objectCount: 1 },
+      error
+    );
+    return null;
+  }
 }
 
 function instapayRpcError(error) {
@@ -1649,6 +1667,12 @@ app.post(
       return res.status(502).json({ error: 'product_image_upload_failed' });
     }
 
+    const cardStoragePath = await uploadProductCardDerivative(
+      storagePath,
+      productId,
+      req.body
+    );
+
     const publicUrlResult = sbAdmin.storage
       .from(PRODUCT_IMAGE_BUCKET)
       .getPublicUrl(storagePath);
@@ -1657,10 +1681,13 @@ app.post(
       : '';
 
     if (!publicUrl) {
-      const cleanup = await removeProductImageObjects([storagePath], {
-        event: 'product_image_url_cleanup_failed',
-        productId,
-      });
+      const cleanup = await removeProductImageObjects(
+        [storagePath, ...(cardStoragePath ? [cardStoragePath] : [])],
+        {
+          event: 'product_image_url_cleanup_failed',
+          productId,
+        }
+      );
       return res.status(500).json({
         error: 'product_image_url_failed',
         cleanup_failed: !cleanup.ok,
@@ -1677,10 +1704,13 @@ app.post(
     );
 
     if (imageError || !image) {
-      const cleanup = await removeProductImageObjects([storagePath], {
-        event: 'product_image_insert_cleanup_failed',
-        productId,
-      });
+      const cleanup = await removeProductImageObjects(
+        [storagePath, ...(cardStoragePath ? [cardStoragePath] : [])],
+        {
+          event: 'product_image_insert_cleanup_failed',
+          productId,
+        }
+      );
       const knownError = imageError && imageError.message;
       if (knownError === 'product_not_found') {
         return res.status(404).json({ error: 'product_not_found', cleanup_failed: !cleanup.ok });
@@ -1773,7 +1803,10 @@ app.delete(
       });
     }
 
-    const cleanup = await removeProductImageObjects([manifestPath], {
+    const cleanup = await removeProductImageObjects([
+      manifestPath,
+      deriveProductCardPath(manifestPath, manifestProductId),
+    ], {
       event: 'product_image_storage_cleanup_failed',
       productId,
       imageId,
@@ -1932,7 +1965,11 @@ app.delete(
       });
     }
 
-    const cleanup = await removeProductImageObjects(storagePaths, {
+    const cleanupPaths = storagePaths.flatMap((storagePath) => [
+      storagePath,
+      deriveProductCardPath(storagePath, productId),
+    ]);
+    const cleanup = await removeProductImageObjects(cleanupPaths, {
       event: 'product_delete_storage_cleanup_failed',
       productId,
     });

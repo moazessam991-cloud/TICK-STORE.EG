@@ -2114,16 +2114,18 @@ function sellableProds(){
 }
 function normalizeProduct(row){
   if(!row||typeof row!=='object')return row;
+  const imgs=row.product_images;
   let photos=row.photos;
   if(!Array.isArray(photos)||!photos.length){
-    const imgs=row.product_images;
     photos=Array.isArray(imgs)?imgs.map(im=>im&&(im.url||im.image_url||im.src)).filter(Boolean):[];
   }
+  const cardThumb=Array.isArray(imgs)&&imgs.length?sbProductCardImageUrl(imgs[0],row.id):null;
   const c=Array.isArray(row.categories)?row.categories[0]:row.categories;
   return {
     ...row,
     id:row.id,
     photos,
+    cardThumb:cardThumb||(photos[0]||null),
     category_slug:(c&&c.slug)||row.category_slug||'',
     stock_quantity:row.stock_quantity!=null?row.stock_quantity:0,
     tags:Array.isArray(row.tags)?row.tags:[],
@@ -6129,7 +6131,8 @@ function shopCardAddToCart(event,button){
   if(!p||isProductOutOfStock(p))return;
   const image=button.closest('.zcard')?.querySelector('.zcard-product-img:not([hidden])');
   const photos=productGalleryPhotos(p);
-  const thumb=image&&image.getAttribute('src')?image.getAttribute('src'):(photos[0]||null);
+  const showingDerivative=image&&Number(image.dataset.photoIndex)===-1;
+  const thumb=showingDerivative?(photos[0]||null):(image&&image.getAttribute('src')?image.getAttribute('src'):(photos[0]||null));
   addToCart(p.id,p.name,productDisplayPrice(p),p.emoji||'⌚',p.brand||'',p.bg||'',thumb);
 }
 function shopCardToggleWish(event,button){
@@ -6144,6 +6147,7 @@ function shopCardToggleWish(event,button){
 function zCardHTML(p,idx){
   const dp=productDisplayPrice(p),regular=finiteAmount(p.price);
   const wished=S.wish.has(p.id),photos=productGalleryPhotos(p),thumb=photos[0]||null;
+  const cardThumb=p.cardThumb||thumb,usingCardDerivative=!!(cardThumb&&thumb&&cardThumb!==thumb);
   const outOfStock=isProductOutOfStock(p),productId=escHTML(String(p.id));
   const tagMap={hot:'ztag-hot',new:'ztag-new',sale:'ztag-sale',limited:'ztag-limited',vintage:''};
   const tagLabel={hot:'Hot',new:'New',sale:'Sale',limited:'Limited',vintage:'Vintage'};
@@ -6163,12 +6167,12 @@ function zCardHTML(p,idx){
   const swatches=colors.length?'<div class="zcard-swatches" aria-label="'+colors.length+' available colors">'+
     visibleColors.map(row=>'<span class="zcard-sw" style="background:'+escHTML(row.color)+'" title="'+escHTML(row.name)+'"></span>').join('')+
     (colors.length>3?'<span class="zcard-sw-more">+'+(colors.length-3)+'</span>':'')+'</div>':'';
-  const image=thumb
-    ?'<img class="zcard-product-img" src="'+escHTML(thumb)+'" data-product-id="'+productId+'" data-photo-index="0" alt="'+escHTML(p.name||'Watch')+'" loading="lazy" decoding="async" onload="shopCardImageLoaded(this)" onerror="shopCardImageError(this)">'
+  const image=cardThumb
+    ?'<img class="zcard-product-img" src="'+escHTML(cardThumb)+'" data-product-id="'+productId+'" data-photo-index="'+(usingCardDerivative?'-1':'0')+'" alt="'+escHTML(p.name||'Watch')+'" loading="lazy" decoding="async" onload="shopCardImageLoaded(this)" onerror="shopCardImageError(this)">'
     :'';
   const photoCount=photos.length>1?'<span class="zcard-photo-count" aria-label="'+photos.length+' product photos">1 / '+photos.length+'</span>':'';
   return '<article class="zcard'+(outOfStock?' product-out-of-stock':'')+'" style="animation-delay:'+Math.min(idx*.05,.3).toFixed(2)+'s">'+
-    '<div class="zcard-img'+(thumb?'':' image-unavailable')+'" style="background:'+shopCardTint(p)+'" role="link" tabindex="0" data-product-id="'+productId+'" aria-label="View '+escHTML(p.name||'watch')+'" onclick="shopOpenProduct(this.dataset.productId)" onkeydown="shopCardKeyOpen(event,this.dataset.productId)">'+
+    '<div class="zcard-img'+(cardThumb?'':' image-unavailable')+'" style="background:'+shopCardTint(p)+'" role="link" tabindex="0" data-product-id="'+productId+'" aria-label="View '+escHTML(p.name||'watch')+'" onclick="shopOpenProduct(this.dataset.productId)" onkeydown="shopCardKeyOpen(event,this.dataset.productId)">'+
       '<div class="zcard-placeholder" aria-hidden="true"><strong>TICK.</strong><small>Image unavailable</small></div>'+image+tagGroup+photoCount+
       '<button type="button" class="zcard-wish'+(wished?' on':'')+'" data-product-id="'+productId+'" aria-label="'+(wished?'Remove from':'Add to')+' wishlist" aria-pressed="'+(wished?'true':'false')+'" onclick="shopCardToggleWish(event,this)">'+(wished?'♥':'♡')+'</button>'+
     '</div>'+

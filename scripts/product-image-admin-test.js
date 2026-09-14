@@ -7,6 +7,19 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const vm = require('vm');
+const sharp = require('sharp');
+const {
+  PRODUCT_CARD_MAX_HEIGHT,
+  PRODUCT_CARD_MAX_WIDTH,
+  createProductCardImage,
+  deriveProductCardPath,
+  isSafeProductImagePath,
+} = require('../server/productImageCards');
+const {
+  backfillProductCardImages,
+  parseOptions,
+} = require('./backfill-product-card-images');
 
 const root = path.resolve(__dirname, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
@@ -15,6 +28,7 @@ const clientSource = read('public/supabase-client.js');
 const htmlSource = read('public/index.html');
 const migration = read('supabase/migrations/20260802010000_product_images_storage_hardening.sql');
 const verification = read('supabase/verification/verify_product_images_storage_hardening.sql');
+const backfillSource = read('scripts/backfill-product-card-images.js');
 
 const API_PORT = 38493;
 const SUPABASE_PORT = 38494;
@@ -56,6 +70,28 @@ check('upload enforces MIME, five MiB, magic bytes and server paths', () => {
   assert(serverSource.includes('detectedProofExtension(req.body)'));
   assert(serverSource.includes('`${productId}/${crypto.randomUUID()}.${actualExtension}`'));
   assert(!clientSource.includes('storage_path:'));
+});
+
+check('card derivatives are auxiliary and use immutable upload controls', () => {
+  assert(serverSource.includes('uploadProductCardDerivative('));
+  assert(serverSource.includes("contentType: 'image/webp'"));
+  assert(serverSource.includes("cacheControl: '31536000'"));
+  assert(serverSource.includes('upsert: false'));
+  assert.strictEqual((serverSource.match(/insert_product_image_admin/g) || []).length, 1);
+  assert(!backfillSource.includes(".from('product_images').insert"));
+  assert(!backfillSource.includes(".from('product_images').update"));
+  assert(!backfillSource.includes(".from('product_images').delete"));
+});
+
+check('Shop uses cardThumb while Product Detail remains on original photos', () => {
+  assert(htmlSource.includes('cardThumb:cardThumb||(photos[0]||null)'));
+  assert(htmlSource.includes("const cardThumb=p.cardThumb||thumb,usingCardDerivative="));
+  assert(htmlSource.includes("(usingCardDerivative?'-1':'0')"));
+  assert(htmlSource.includes('const photos=productGalleryPhotos(p);'));
+  const detailStart = htmlSource.indexOf('function rProd(id)');
+  const shopCardStart = htmlSource.indexOf('function shopOpenProduct');
+  assert(detailStart >= 0 && shopCardStart > detailStart);
+  assert(!htmlSource.slice(detailStart, shopCardStart).includes('cardThumb'));
 });
 
 check('browser contains no direct product image or product-row mutation', () => {
@@ -109,6 +145,157 @@ check('Storage hardening preserves public SELECT and scopes mutation denial', ()
   assert(verification.includes('unsafe_policy_count'));
 });
 
+async function cardFeatureChecks() {
+  const makeFixture = async (format, width, height) => {
+    const image = sharp({
+      create: {
+        width,
+        height,
+        channels: 4,
+        background: { r: 30, g: 120, b: 200, alpha: 0.6 },
+      },
+    });
+    if (format === 'png') return image.png().toBuffer();
+    if (format === 'jpeg') return image.jpeg().toBuffer();
+    return image.webp().toBuffer();
+  };
+
+  for (const format of ['png', 'jpeg', 'webp']) {
+    const output = await createProductCardImage(await makeFixture(format, 1200, 1600));
+    const metadata = await sharp(output).metadata();
+    assert.strictEqual(metadata.format, 'webp', `${format} derivative was not WebP`);
+    assert(metadata.width <= PRODUCT_CARD_MAX_WIDTH, `${format} derivative exceeded max width`);
+    assert(metadata.height <= PRODUCT_CARD_MAX_HEIGHT, `${format} derivative exceeded max height`);
+  }
+
+  const smallOutput = await createProductCardImage(await makeFixture('png', 200, 250));
+  const smallMetadata = await sharp(smallOutput).metadata();
+  assert.strictEqual(smallMetadata.width, 200, 'small card source was enlarged');
+  assert.strictEqual(smallMetadata.height, 250, 'small card source was enlarged');
+
+  const expectedCardPath = `${PRODUCT_ID}/cards/${SERVER_OBJECT_ID}.webp`;
+  assert.strictEqual(deriveProductCardPath(SERVER_PATH, PRODUCT_ID), expectedCardPath);
+  assert(isSafeProductImagePath(SERVER_PATH, PRODUCT_ID));
+  for (const unsafePath of [
+    `${PRODUCT_ID}/../secret.png`,
+    `${PRODUCT_ID}/nested/${SERVER_OBJECT_ID}.png`,
+    `${PRODUCT_ID}/cards/${SERVER_OBJECT_ID}.webp`,
+    `${OTHER_IMAGE_ID}/${SERVER_OBJECT_ID}.png`,
+  ]) {
+    assert(!isSafeProductImagePath(unsafePath, PRODUCT_ID), `unsafe path accepted: ${unsafePath}`);
+    assert.throws(() => deriveProductCardPath(unsafePath, PRODUCT_ID), /unsafe_product_image_path/);
+  }
+
+  const clientContext = { window: {}, console };
+  vm.runInNewContext(clientSource, clientContext);
+  clientContext.window.sbClient = {
+    storage: {
+      from(bucket) {
+        assert.strictEqual(bucket, 'product-images');
+        return {
+          getPublicUrl(cardPath) {
+            return { data: { publicUrl: `https://storage.invalid/${cardPath}` } };
+          },
+        };
+      },
+    },
+  };
+  assert.strictEqual(
+    clientContext.sbProductCardImageUrl({ storage_path: SERVER_PATH }, PRODUCT_ID),
+    `https://storage.invalid/${expectedCardPath}`
+  );
+  assert.strictEqual(
+    clientContext.sbProductCardImageUrl({ storage_path: `${PRODUCT_ID}/../secret.png` }, PRODUCT_ID),
+    null
+  );
+
+  const fallbackStart = htmlSource.indexOf('function shopCardImageError');
+  const fallbackEnd = htmlSource.indexOf('function shopCardAddToCart', fallbackStart);
+  assert(fallbackStart >= 0 && fallbackEnd > fallbackStart);
+  const counter = { textContent: '', hidden: false };
+  const media = {
+    querySelector: () => counter,
+    classList: { add() {}, remove() {} },
+  };
+  const fallbackContext = {
+    S: { prods: [{ id: PRODUCT_ID }] },
+    productGalleryPhotos: () => ['https://storage.invalid/original.png'],
+  };
+  vm.runInNewContext(htmlSource.slice(fallbackStart, fallbackEnd), fallbackContext);
+  const image = {
+    dataset: { productId: PRODUCT_ID, photoIndex: '-1' },
+    closest: () => media,
+    hidden: false,
+    removeAttribute(name) { if (name === 'src') this.src = null; },
+  };
+  fallbackContext.shopCardImageError(image);
+  assert.strictEqual(image.src, 'https://storage.invalid/original.png');
+  assert.strictEqual(image.dataset.photoIndex, '0');
+  fallbackContext.shopCardImageError(image);
+  assert.strictEqual(image.src, null, 'failed original was retried after card fallback');
+  assert.strictEqual(image.hidden, true, 'exhausted card fallback was not hidden');
+
+  assert.deepStrictEqual(parseOptions([]), { apply: false, limit: Infinity });
+  assert.deepStrictEqual(parseOptions(['--apply', '--limit=1']), { apply: true, limit: 1 });
+  assert.throws(() => parseOptions(['--write']), /unknown_option/);
+
+  const original = await makeFixture('png', 1000, 1200);
+  const secondPath = `${PRODUCT_ID}/${OTHER_IMAGE_ID}.jpg`;
+  const secondCardPath = `${PRODUCT_ID}/cards/${OTHER_IMAGE_ID}.webp`;
+  const objects = new Set([SERVER_PATH, secondPath, secondCardPath]);
+  const storageCalls = { downloads: [], uploads: [] };
+  const bucket = {
+    async list(folder, options) {
+      const objectPath = `${folder}/${options.search}`;
+      return { data: objects.has(objectPath) ? [{ name: options.search }] : [], error: null };
+    },
+    async download(storagePath) {
+      storageCalls.downloads.push(storagePath);
+      assert(objects.has(storagePath), 'backfill downloaded an unknown original');
+      return { data: original, error: null };
+    },
+    async upload(storagePath, body, options) {
+      storageCalls.uploads.push({ storagePath, body, options });
+      assert(storagePath.includes('/cards/'), 'backfill overwrote an original path');
+      assert.strictEqual(options.upsert, false, 'backfill allowed overwrites');
+      objects.add(storagePath);
+      return { data: {}, error: null };
+    },
+  };
+  const fakeClient = {
+    storage: { from(name) { assert.strictEqual(name, 'product-images'); return bucket; } },
+  };
+  const rows = [
+    { id: IMAGE_ID, product_id: PRODUCT_ID, storage_path: SERVER_PATH },
+    { id: OTHER_IMAGE_ID, product_id: PRODUCT_ID, storage_path: secondPath },
+    { id: 'malformed', product_id: PRODUCT_ID, storage_path: `${PRODUCT_ID}/../secret.png` },
+  ];
+  const quietLogger = { warn() {} };
+  const dryRun = await backfillProductCardImages({ client: fakeClient, rows, logger: quietLogger });
+  assert.strictEqual(dryRun.mode, 'dry-run');
+  assert.strictEqual(dryRun.planned, 1);
+  assert.strictEqual(dryRun.existing, 1);
+  assert.strictEqual(dryRun.malformed, 1);
+  assert.strictEqual(storageCalls.downloads.length, 0, 'dry-run downloaded an original');
+  assert.strictEqual(storageCalls.uploads.length, 0, 'dry-run wrote a derivative');
+
+  const applied = await backfillProductCardImages({ client: fakeClient, rows, apply: true, logger: quietLogger });
+  assert.strictEqual(applied.uploaded, 1);
+  assert.strictEqual(storageCalls.downloads.length, 1);
+  assert.strictEqual(storageCalls.uploads.length, 1);
+  assert.strictEqual(storageCalls.uploads[0].storagePath, expectedCardPath);
+  assert.strictEqual(storageCalls.uploads[0].options.contentType, 'image/webp');
+  assert.strictEqual(storageCalls.uploads[0].options.cacheControl, '31536000');
+
+  const repeated = await backfillProductCardImages({ client: fakeClient, rows, apply: true, logger: quietLogger });
+  assert.strictEqual(repeated.uploaded, 0, 'repeated backfill created a duplicate derivative');
+  assert.strictEqual(storageCalls.uploads.length, 1, 'repeated backfill uploaded again');
+  assert(objects.has(SERVER_PATH) && objects.has(secondPath), 'backfill removed an original');
+
+  checks.push('Sharp card generation, safe paths, frontend fallback and idempotent backfill behavior');
+  return { png: await makeFixture('png', 1200, 1600) };
+}
+
 function request(method, requestPath, body, headers = {}) {
   return new Promise((resolve, reject) => {
     const payload = body == null
@@ -156,6 +343,7 @@ function jsonResponse(res, status, payload) {
 }
 
 async function endpointChecks() {
+  const fixtures = await cardFeatureChecks();
   const state = {
     mode: 'normal',
     requests: [],
@@ -166,7 +354,7 @@ async function endpointChecks() {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
-      state.requests.push({ method: req.method, url: req.url, body });
+      state.requests.push({ method: req.method, url: req.url, body, headers: req.headers });
       const requestUrl = new URL(req.url, `http://127.0.0.1:${SUPABASE_PORT}`);
 
       if (req.method === 'GET' && requestUrl.pathname === '/rest/v1/products') {
@@ -188,6 +376,9 @@ async function endpointChecks() {
       }
 
       if (req.method === 'POST' && requestUrl.pathname.startsWith('/storage/v1/object/product-images/')) {
+        if (state.mode === 'derivative_failure' && requestUrl.pathname.includes('/cards/')) {
+          return jsonResponse(res, 500, { message: 'forced_derivative_failure', code: 'XX000' });
+        }
         return jsonResponse(res, 200, { Key: requestUrl.pathname.slice('/storage/v1/object/'.length) });
       }
 
@@ -310,7 +501,7 @@ async function endpointChecks() {
     });
     assert.strictEqual(response.status, 415, 'invalid product-image magic bytes were accepted');
 
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    const png = fixtures.png;
     state.mode = 'nonexistent';
     response = await request('POST', `/api/admin/products/${PRODUCT_ID}/images`, png, {
       ...auth,
@@ -329,6 +520,40 @@ async function endpointChecks() {
       'upload fixture did not reach Storage');
     assert(state.requests.some((entry) => entry.method === 'DELETE' && entry.url === '/storage/v1/object/product-images'),
       'uploaded object was not removed after database failure');
+    const failedInsertCleanup = state.requests.find(
+      (entry) => entry.method === 'DELETE' && entry.url === '/storage/v1/object/product-images'
+    );
+    assert(failedInsertCleanup.body.includes('/cards/'), 'database failure did not clean up the derivative');
+
+    state.mode = 'normal';
+    state.requests.length = 0;
+    response = await request('POST', `/api/admin/products/${PRODUCT_ID}/images`, png, {
+      ...auth,
+      'Content-Type': 'image/png',
+    });
+    assert.strictEqual(response.status, 201, 'valid product image upload failed');
+    const storageUploads = state.requests.filter(
+      (entry) => entry.method === 'POST' && entry.url.includes('/storage/v1/object/product-images/')
+    );
+    assert.strictEqual(storageUploads.length, 2, 'original and derivative were not each uploaded once');
+    const derivativeUpload = storageUploads.find((entry) => entry.url.includes('/cards/'));
+    assert(derivativeUpload, 'card derivative was not uploaded');
+    assert.strictEqual(derivativeUpload.headers['content-type'], 'image/webp');
+    assert.strictEqual(
+      state.requests.filter((entry) => entry.url === '/rest/v1/rpc/insert_product_image_admin').length,
+      1,
+      'card derivative created an extra database row'
+    );
+
+    state.mode = 'derivative_failure';
+    state.requests.length = 0;
+    response = await request('POST', `/api/admin/products/${PRODUCT_ID}/images`, png, {
+      ...auth,
+      'Content-Type': 'image/png',
+    });
+    assert.strictEqual(response.status, 201, 'derivative failure broke the original upload flow');
+    assert(!state.requests.some((entry) => entry.method === 'DELETE'),
+      'derivative failure destroyed the valid original');
 
     state.mode = 'normal';
     state.requests.length = 0;
@@ -339,7 +564,20 @@ async function endpointChecks() {
     const removal = state.requests.find((entry) => entry.method === 'DELETE' && entry.url === '/storage/v1/object/product-images');
     assert(removal, 'image delete did not clean up the fixed product-images bucket');
     assert(removal.body.includes(SERVER_PATH), 'image delete did not use the database-derived path');
+    assert(removal.body.includes(`/cards/${SERVER_OBJECT_ID}.webp`),
+      'image delete did not include derivative cleanup');
     assert(!removal.body.includes('arbitrary-secret'), 'image delete trusted the browser-supplied path');
+
+    state.requests.length = 0;
+    response = await request('DELETE', `/api/admin/products/${PRODUCT_ID}`, null, auth);
+    assert.strictEqual(response.status, 200, 'product with missing legacy derivative was not deletable');
+    const productRemoval = state.requests.find(
+      (entry) => entry.method === 'DELETE' && entry.url === '/storage/v1/object/product-images'
+    );
+    assert(productRemoval, 'product delete did not clean up Storage');
+    assert(productRemoval.body.includes(SERVER_PATH), 'product delete omitted original cleanup');
+    assert(productRemoval.body.includes(`/cards/${SERVER_OBJECT_ID}.webp`),
+      'product delete omitted derivative cleanup');
 
     state.requests.length = 0;
     response = await request('PUT', `/api/admin/products/${PRODUCT_ID}/images/order`,
@@ -377,7 +615,7 @@ async function endpointChecks() {
     assert(!state.requests.some((entry) => entry.url.startsWith('/storage/v1/')),
       'Storage cleanup ran even though database deletion was blocked');
 
-    console.log(`product-image-admin-test: ${checks.length} source controls + 14 mocked endpoint controls verified`);
+    console.log(`product-image-admin-test: ${checks.length} focused controls + mocked endpoint controls verified`);
     for (const name of checks) console.log(`  ✓ ${name}`);
   } catch (error) {
     if (childStderr) console.error(childStderr);
