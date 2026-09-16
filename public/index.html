@@ -209,6 +209,12 @@ textarea{resize:vertical}
   cursor:none;
 }
 
+.nl[data-page="second-hand"][hidden],
+.mob-card[onclick*="/second-hand"][hidden],
+.f-lnk[onclick*="/second-hand"][hidden]{
+  display:none !important;
+}
+
 .mob-card:hover{
   transform:translateY(-3px);
   background:linear-gradient(
@@ -3159,6 +3165,8 @@ function pCardHTML(p){
 
   const wished=S.wish.has(p.id);
   const thumb=p.photos&&p.photos.length?p.photos[0]:null;
+  const displayThumb=p.cardThumb||thumb;
+  const fallbackThumb=displayThumb&&thumb&&displayThumb!==thumb?thumb:'';
 
   const saleDisp=
     productDisplayPrice(p)<finiteAmount(p.price)
@@ -3187,8 +3195,8 @@ function pCardHTML(p){
 
   return '<div class="pcard fu'+(outOfStock?' product-out-of-stock':'')+'" onclick="S.lastPage=S.path;go(\'/product/'+p.id+'\')" role="button" tabindex="0">'+
     '<div class="pc-img" style="background:'+escHTML(p.bg||'var(--cr1)')+'">'+
-      (thumb
-        ? '<img src="'+escHTML(thumb)+'" alt="'+escHTML(p.name)+'" loading="lazy" decoding="async">'
+      (displayThumb
+        ? '<img src="'+escHTML(displayThumb)+'" data-original="'+escHTML(fallbackThumb)+'" onerror="cartImageError(this)" alt="'+escHTML(p.name)+'" loading="lazy" decoding="async">'
         : '<span class="pc-em">'+escHTML(p.emoji)+'</span>'
       )+
       stockBadge+
