@@ -5771,7 +5771,12 @@ function showQRes(restoring=false){
     '<div class="qr-badge">Your vibe: '+escHTML(res.badge)+'</div>'+
     '<div class="qr-title">'+escHTML(res.title)+'</div>'+
     '<div class="qr-desc">'+escHTML(res.desc)+'</div>'+
-    '<div class="qr-cards">'+watches.map(w=>'<div class="qrc" onclick="go(\'/product/'+w.id+'\')"><div class="qrc-em">'+(w.photos&&w.photos.length?'<img src="'+escHTML(w.photos[0])+'" style="width:38px;height:38px;object-fit:cover;border-radius:var(--r)">':escHTML(w.emoji))+'</div><div class="qrc-br">'+escHTML(w.brand)+'</div><div class="qrc-nm">'+escHTML(w.name)+'</div><div class="qrc-pr">'+fp(productDisplayPrice(w))+'</div></div>').join('')+'</div>'+
+    '<div class="qr-cards">'+watches.map(w=>{
+      const originalThumb=w.photos&&w.photos.length?w.photos[0]:null;
+      const displayThumb=w.cardThumb||originalThumb;
+      const fallbackThumb=displayThumb&&originalThumb&&displayThumb!==originalThumb?originalThumb:'';
+      return '<div class="qrc" onclick="go(\'/product/'+w.id+'\')"><div class="qrc-em">'+(displayThumb?'<img src="'+escHTML(displayThumb)+'" data-original="'+escHTML(fallbackThumb)+'" onerror="cartImageError(this)" style="width:38px;height:38px;object-fit:cover;border-radius:var(--r)">':escHTML(w.emoji))+'</div><div class="qrc-br">'+escHTML(w.brand)+'</div><div class="qrc-nm">'+escHTML(w.name)+'</div><div class="qrc-pr">'+fp(productDisplayPrice(w))+'</div></div>';
+    }).join('')+'</div>'+
     '<div class="qr-cta"><button class="btn bp" onclick="go(\'/shop\')">Shop my matches →</button><button class="qrt" onclick="go(\'/quiz\',true)">Retake quiz</button></div>'+
   '</div></div></div></div>';if(!restoring)confetti();
 }

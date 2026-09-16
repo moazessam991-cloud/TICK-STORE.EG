@@ -88,10 +88,25 @@ check('Shop uses cardThumb while Product Detail remains on original photos', () 
   assert(htmlSource.includes("const cardThumb=p.cardThumb||thumb,usingCardDerivative="));
   assert(htmlSource.includes("(usingCardDerivative?'-1':'0')"));
   assert(htmlSource.includes('const photos=productGalleryPhotos(p);'));
-  const detailStart = htmlSource.indexOf('function rProd(id)');
-  const shopCardStart = htmlSource.indexOf('function shopOpenProduct');
-  assert(detailStart >= 0 && shopCardStart > detailStart);
-  assert(!htmlSource.slice(detailStart, shopCardStart).includes('cardThumb'));
+  const detailStart = htmlSource.indexOf('/* PRODUCT DETAIL */');
+  const quizStart = htmlSource.indexOf('/* QUIZ */', detailStart);
+  assert(detailStart >= 0 && quizStart > detailStart);
+  const detailSource = htmlSource.slice(detailStart, quizStart);
+  assert(!detailSource.includes('cardThumb'));
+});
+
+check('Quiz results use cardThumb with original fallback', () => {
+  const quizStart = htmlSource.indexOf('/* QUIZ */');
+  const archiveStart = htmlSource.indexOf('/* ARCHIVE */', quizStart);
+  assert(quizStart >= 0 && archiveStart > quizStart);
+  const quizSource = htmlSource.slice(quizStart, archiveStart);
+
+  assert(quizSource.includes('const displayThumb=w.cardThumb||originalThumb;'));
+  assert(quizSource.includes("const fallbackThumb=displayThumb&&originalThumb&&displayThumb!==originalThumb?originalThumb:'';"));
+  assert(quizSource.includes('escHTML(displayThumb)'));
+  assert(quizSource.includes('escHTML(fallbackThumb)'));
+  assert(quizSource.includes('onerror="cartImageError(this)"'));
+  assert(!quizSource.includes('escHTML(w.photos[0])'));
 });
 
 check('browser contains no direct product image or product-row mutation', () => {
