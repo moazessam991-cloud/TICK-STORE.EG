@@ -1830,7 +1830,7 @@ footer{background:linear-gradient(180deg,#0F0F0D,var(--ink))}
   <div class="nav-links">
     <div class="nl" data-page="shop" onclick="go('/shop')">Shop</div>
     <div class="nl" data-page="quiz" onclick="go('/quiz')">Find My Vibe</div>
-    <div class="nl" data-page="second-hand" onclick="go('/second-hand')">Second Hand</div>
+    <div class="nl" data-page="second-hand" onclick="go('/second-hand')" hidden>Second Hand</div>
     <div class="nl" data-page="straps" onclick="go('/straps')">Straps</div>
     <div class="nl" data-page="learn" onclick="go('/learn')">Learn</div>
     <div class="nl" data-page="about" onclick="go('/about')">About</div>
@@ -1862,7 +1862,7 @@ footer{background:linear-gradient(180deg,#0F0F0D,var(--ink))}
     <div class="mob-arrow">→</div>
   </div>
 
-  <div class="mob-card" onclick="toggleMob();go('/second-hand')">
+  <div class="mob-card" onclick="toggleMob();go('/second-hand')" hidden>
     <div>
       <div class="mob-title">♻️ Second Hand</div>
       <div class="mob-sub">Verified pre-owned watches</div>
@@ -3288,7 +3288,7 @@ function footerHTML(){
     '<div><div class="f-brand">TICK<em>.</em></div><div class="f-tag">Egypt\'s first Gen Z watch culture brand. We curate so you don\'t have to scroll through 5,000 options.</div>'+
     (icons?'<div style="display:flex;gap:8px;margin-top:20px">'+icons+'</div>':'')+
     '</div>'+
-    '<div><div class="f-ct">Shop</div><div class="f-lnk" onclick="go(\'/shop\')">New Drops</div><div class="f-lnk" onclick="go(\'/second-hand\')">TICK. Second Hand</div><div class="f-lnk" onclick="go(\'/straps\')">Straps</div></div>'+
+    '<div><div class="f-ct">Shop</div><div class="f-lnk" onclick="go(\'/shop\')">New Drops</div><div class="f-lnk" onclick="go(\'/second-hand\')" hidden>TICK. Second Hand</div><div class="f-lnk" onclick="go(\'/straps\')">Straps</div></div>'+
     '<div><div class="f-ct">Learn</div><div class="f-lnk" onclick="go(\'/learn\')">TICK. Learn</div><div class="f-lnk" onclick="go(\'/about\')">Our Story</div></div>'+
     '<div><div class="f-ct">Help</div><div class="f-lnk">Cash on Delivery</div><div class="f-lnk">InstaPay</div>'+waHref+'</div>'+
     '</div><div class="f-bot"><span>&#169; 2026 TICK. &#8212; Made with &#9829; in Cairo</span>'+
@@ -5257,10 +5257,6 @@ function rHome(){
       '</div>'+
     '</div>'+
   '</div></div>'+
-  '<section class="sec alt"><div class="wrap">'+
-    '<div class="shead"><div><div class="ey">TICK. Second Hand</div><div class="stitle">Selected second hand</div></div><div class="sa" onclick="go(\'/second-hand\')">View all →</div></div>'+
-    getArchiveList().slice(0,2).map(aCardHTML).join('')+
-  '</div></section>'+
   '<section class="sec"><div class="wrap">'+
     '<div class="shead"><div><div class="ey">TICK. Learn</div><div class="stitle">Everything about watches</div></div><div class="sa" onclick="go(\'/learn\')">All episodes →</div></div>'+
     '<div class="lgrid">'+S.episodes.slice(0,3).map(lCardHTML).join('')+'</div>'+
