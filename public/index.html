@@ -3905,9 +3905,11 @@ function admProds(filterSlug, label, addLabel){
     '<div class="adm-tbr"><button class="btn bp" onclick="showAddProd('+(filterSlug?"'"+filterSlug+"'":'')+')">'+escHTML(addText)+'</button></div></div>'+
     '<div class="apgrid">'+list.map(p=>{
       const thumb=p.photos&&p.photos.length?p.photos[0]:null;
+      const displayThumb=p.cardThumb||thumb;
+      const fallbackThumb=displayThumb&&thumb&&displayThumb!==thumb?thumb:'';
       const notifyCount=S.notifyMe.filter(n=>String(n.pid)===String(p.id)).length;
       const stockState=productStockState(p);
-      return '<div class="apc"><div class="apc-img" style="background:'+escHTML(p.bg||'#EAE4F0')+'">'+(thumb?'<img src="'+escHTML(thumb)+'" alt="" style="width:100%;height:100%;object-fit:cover">':escHTML(p.emoji||'⌚'))+'<span class="apc-st '+(stockState.out?'sout':stockState.low?'slow':'sok')+'">'+(stockState.out?'Out':stockState.low?stockState.stock+' left':stockState.stock+' in stock')+'</span></div>'+
+      return '<div class="apc"><div class="apc-img" style="background:'+escHTML(p.bg||'#EAE4F0')+'">'+(displayThumb?'<img src="'+escHTML(displayThumb)+'" data-original="'+escHTML(fallbackThumb)+'" onerror="cartImageError(this)" alt="" style="width:100%;height:100%;object-fit:cover">':escHTML(p.emoji||'⌚'))+'<span class="apc-st '+(stockState.out?'sout':stockState.low?'slow':'sok')+'">'+(stockState.out?'Out':stockState.low?stockState.stock+' left':stockState.stock+' in stock')+'</span></div>'+
         '<div class="apc-body"><div class="apc-br">'+escHTML(p.brand)+'</div><div class="apc-nm">'+escHTML(p.name)+'</div><div class="apc-pr">'+fp(productDisplayPrice(p))+'</div>'+
         (notifyCount?'<div style="font-size:11px;color:var(--g0);font-weight:600;margin-bottom:6px">🔔 '+notifyCount+' waiting</div>':'')+
         '<div class="apc-acts"><button class="ta" onclick="showEditProd(\''+escHTML(p.id)+'\')">Edit</button>'+
