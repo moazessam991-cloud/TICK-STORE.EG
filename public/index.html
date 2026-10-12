@@ -2590,7 +2590,7 @@ function render(p){
     updNavActive(p);
     updAmnNav();
     updWAFloat();
-    window.scrollTo({top:0,behavior:'smooth'});
+    window.scrollTo({top:0,behavior:p.startsWith('/product/')?'instant':'smooth'});
     setTimeout(initFUs,100);
   },120);
 }
